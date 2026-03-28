@@ -1,0 +1,168 @@
+═══════════════════════════════════════════════════════════════
+                   🎯 开始开发 - 三步走
+═══════════════════════════════════════════════════════════════
+
+【第一步】环境检查和配置（5 分钟）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 运行启动脚本检查环境：
+   ./setup.sh
+
+2. 配置 API 密钥：
+   cp Config.plist.template Config.plist
+   open Config.plist
+   
+   需要填入：
+   • AI_API_KEY: 你的 Claude API Key
+   • TTS_API_KEY: 你的 Azure TTS Key
+   
+   获取地址：
+   • Claude: https://console.anthropic.com/
+   • Azure: https://portal.azure.com/
+
+3. 验证配置：
+   打开 Config.plist 确认密钥已填写
+
+【第二步】创建 Xcode 项目（10 分钟）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 打开 Xcode
+
+2. 创建新项目：
+   File → New → Project
+   选择：iOS → App
+   
+   填写信息：
+   • Product Name: AI有声书
+   • Team: 选择你的开发团队
+   • Organization Identifier: com.yourcompany
+   • Interface: SwiftUI
+   • Language: Swift
+
+3. 保存项目到当前目录
+
+4. 添加源代码文件：
+   • 在 Xcode 项目导航器中右键点击项目
+   • 选择 "Add Files to..."
+   • 选择 Sources 目录
+   • 勾选 "Copy items if needed"
+   • 点击 "Add"
+
+5. 添加 Config.plist：
+   • 同样方式添加 Config.plist 文件
+   • 确保添加到项目 target
+
+6. 配置 Info.plist：
+   添加后台音频播放权限：
+   <key>UIBackgroundModes</key>
+   <array>
+       <string>audio</string>
+   </array>
+
+【第三步】测试运行（5 分钟）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 在 ContentView.swift 中添加测试代码：
+
+import SwiftUI
+
+struct ContentView: View {
+    @State private var status = "准备就绪"
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("AI 有声书")
+                .font(.largeTitle)
+            
+            Text(status)
+                .foregroundColor(.secondary)
+            
+            Button("测试生成") {
+                testGeneration()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+    }
+    
+    func testGeneration() {
+        status = "开始测试..."
+        
+        Task {
+            do {
+                let generator = AudioBookGenerator(
+                    aiApiKey: Config.aiApiKey,
+                    ttsApiKey: Config.ttsApiKey
+                )
+                
+                let text = "\"你好！\"小明说。"
+                
+                let playlist = try await generator.generate(
+                    text: text
+                ) { progress in
+                    DispatchQueue.main.async {
+                        status = progress.message
+                    }
+                }
+                
+                DispatchQueue.main.async {
+                    status = "生成成功！共 \(playlist.items.count) 个片段"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    status = "错误: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+}
+
+2. 选择模拟器或真机
+
+3. 点击 Run (⌘R)
+
+4. 点击"测试生成"按钮
+
+5. 观察状态变化，如果显示"生成成功"，说明一切正常！
+
+═══════════════════════════════════════════════════════════════
+
+✅ 如果测试成功，恭喜你！现在可以开始开发完整的 UI 了！
+
+📚 接下来的开发建议：
+
+1. 创建主界面（文本输入、生成按钮）
+2. 创建播放控制界面
+3. 创建书架管理界面
+4. 创建设置界面
+5. 添加文件导入功能
+6. 优化用户体验
+
+参考文档：
+• 快速开始.md - 更多示例代码
+• Docs/开发指南.md - 详细开发指南
+• Sources/使用示例.swift - 8 个完整示例
+
+═══════════════════════════════════════════════════════════════
+
+❓ 遇到问题？
+
+1. API 密钥错误
+   → 检查 Config.plist 中的密钥是否正确
+   → 确认密钥有效且有余额
+
+2. 编译错误
+   → 确保所有 .swift 文件都已添加到项目
+   → 检查 Swift 版本是否 5.7+
+
+3. 运行时错误
+   → 查看 Xcode 控制台的详细错误信息
+   → 参考 Docs/开发指南.md 的常见问题章节
+
+═══════════════════════════════════════════════════════════════
+
+🎉 祝你开发顺利！
+
+有任何问题，查看项目中的文档，里面有详细的说明和示例。
+
+═══════════════════════════════════════════════════════════════

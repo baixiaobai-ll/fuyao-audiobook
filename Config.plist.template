@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ==================== -->
+    <!-- API 密钥配置 -->
+    <!-- ==================== -->
+
+    <!-- AI 分析服务 API 密钥 -->
+    <!-- 获取方式: https://console.anthropic.com/ 或 https://platform.openai.com/ -->
+    <key>AI_API_KEY</key>
+    <string>your-claude-api-key-here</string>
+
+    <!-- TTS 服务 API 密钥 -->
+    <!-- Azure: https://portal.azure.com/ (创建语音服务资源) -->
+    <!-- 科大讯飞: https://console.xfyun.cn/ (格式: appid:apisecret:apikey) -->
+    <key>TTS_API_KEY</key>
+    <string>your-tts-api-key-here</string>
+
+    <!-- ==================== -->
+    <!-- 服务提供商配置 -->
+    <!-- ==================== -->
+
+    <!-- AI 服务提供商: claude 或 openai -->
+    <key>AI_PROVIDER</key>
+    <string>claude</string>
+
+    <!-- TTS 服务提供商: azure, xfyun, openai -->
+    <key>TTS_PROVIDER</key>
+    <string>xfyun</string>
+
+    <!-- Azure 区域 (仅 Azure TTS 需要) -->
+    <!-- 可选值: eastasia, southeastasia, eastus, westus 等 -->
+    <key>AZURE_REGION</key>
+    <string>eastasia</string>
+
+    <!-- ==================== -->
+    <!-- 可选配置 -->
+    <!-- ==================== -->
+
+    <!-- OpenAI API Base URL (可选，使用默认值可不填) -->
+    <key>OPENAI_BASE_URL</key>
+    <string>https://api.openai.com/v1</string>
+
+    <!-- Claude API Base URL (可选，使用默认值可不填) -->
+    <key>CLAUDE_BASE_URL</key>
+    <string>https://api.anthropic.com/v1</string>
+</dict>
+</plist>

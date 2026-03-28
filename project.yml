@@ -1,0 +1,49 @@
+name: 扶摇
+options:
+  bundleIdPrefix: com.fuyao
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: zh-Hans
+
+settings:
+  SWIFT_VERSION: "5"
+  IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+
+targets:
+  扶摇:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Sources
+        excludes:
+          - "使用示例.swift"
+      - path: Sources/Bookshelf
+    resources:
+      - path: Resources
+      - path: App/Assets.xcassets
+    dependencies:
+      - sdk: SwiftUI.framework
+      - sdk: AVFoundation.framework
+      - sdk: Foundation.framework
+      - sdk: WebKit.framework
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: 扶摇
+        UIApplicationSupportsIndirectInputEvents: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.fuyao.audiobook
+      INFOPLIST_FILE: App/Info.plist
+      SWIFT_VERSION: "5"
+      TARGETED_DEVICE_FAMILY: "1,2"
+      CODE_SIGN_STYLE: Automatic
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
