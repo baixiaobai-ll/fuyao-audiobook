@@ -13,18 +13,6 @@ struct ProfileView: View {
     @State private var showLogoutConfirm = false
     @State private var editingNickname = ""
 
-    // 预设头像颜色映射
-    private let presetColors: [String: Color] = [
-        "person.fill": .blue,
-        "star.fill": .orange,
-        "heart.fill": .pink,
-        "leaf.fill": .green,
-        "flame.fill": .red,
-        "book.fill": .purple,
-        "music.note": .teal,
-        "gamecontroller.fill": .indigo,
-    ]
-
     var body: some View {
         NavigationStack {
             List {
@@ -266,14 +254,8 @@ struct ProfileView: View {
     @ViewBuilder
     private func avatarView(size: CGFloat) -> some View {
         switch profileStore.avatarSource {
-        case .preset(let symbol):
-            let color = presetColors[symbol] ?? .blue
-            Image(systemName: symbol)
-                .font(.system(size: size * 0.45))
-                .foregroundColor(.white)
-                .frame(width: size, height: size)
-                .background(color)
-                .clipShape(Circle())
+        case .preset(let id):
+            PresetAvatarCircle(presetId: id, size: size)
         case .custom:
             if let uiImage = profileStore.loadAvatarImage() {
                 Image(uiImage: uiImage)
@@ -282,12 +264,7 @@ struct ProfileView: View {
                     .frame(width: size, height: size)
                     .clipShape(Circle())
             } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.45))
-                    .foregroundColor(.white)
-                    .frame(width: size, height: size)
-                    .background(Color.blue)
-                    .clipShape(Circle())
+                PresetAvatarCircle(presetId: AvatarPresetCatalog.defaultId, size: size)
             }
         }
     }

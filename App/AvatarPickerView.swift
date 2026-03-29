@@ -7,41 +7,27 @@ struct AvatarPickerView: View {
 
     @State private var selectedPhoto: PhotosPickerItem?
 
-    // 预设头像配置
-    private let presets: [(symbol: String, color: Color)] = [
-        ("person.fill", .blue),
-        ("star.fill", .orange),
-        ("heart.fill", .pink),
-        ("leaf.fill", .green),
-        ("flame.fill", .red),
-        ("book.fill", .purple),
-        ("music.note", .teal),
-        ("gamecontroller.fill", .indigo),
-    ]
-
     private let columns = [
         GridItem(.flexible()),
         GridItem(.flexible()),
         GridItem(.flexible()),
-        GridItem(.flexible()),
+        GridItem(.flexible())
     ]
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                // 当前头像预览
                 currentAvatarPreview
                     .padding(.top, 24)
 
-                // 预设头像网格
                 VStack(alignment: .leading, spacing: 12) {
                     Text("选择预设头像")
                         .font(.headline)
                         .padding(.horizontal)
 
                     LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(presets, id: \.symbol) { preset in
-                            presetButton(preset)
+                        ForEach(AvatarPresetCatalog.imageAssetNames, id: \.self) { assetName in
+                            presetImageButton(assetName)
                         }
                     }
                     .padding(.horizontal)
@@ -50,7 +36,6 @@ struct AvatarPickerView: View {
                 Divider()
                     .padding(.horizontal)
 
-                // 从相册选择
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     HStack {
                         Image(systemName: "photo.on.rectangle")
@@ -80,19 +65,13 @@ struct AvatarPickerView: View {
         }
     }
 
-    // MARK: - Current Avatar Preview
+    // MARK: - Preview
 
     @ViewBuilder
     private var currentAvatarPreview: some View {
         switch profileStore.avatarSource {
-        case .preset(let symbol):
-            let color = presets.first(where: { $0.symbol == symbol })?.color ?? .blue
-            Image(systemName: symbol)
-                .font(.system(size: 40))
-                .foregroundColor(.white)
-                .frame(width: 80, height: 80)
-                .background(color)
-                .clipShape(Circle())
+        case .preset(let id):
+            PresetAvatarCircle(presetId: id, size: 80)
         case .custom:
             if let uiImage = profileStore.loadAvatarImage() {
                 Image(uiImage: uiImage)
@@ -101,28 +80,20 @@ struct AvatarPickerView: View {
                     .frame(width: 80, height: 80)
                     .clipShape(Circle())
             } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 40))
-                    .foregroundColor(.white)
-                    .frame(width: 80, height: 80)
-                    .background(Color.blue)
-                    .clipShape(Circle())
+                PresetAvatarCircle(presetId: AvatarPresetCatalog.defaultId, size: 80)
             }
         }
     }
 
-    // MARK: - Preset Button
-
-    private func presetButton(_ preset: (symbol: String, color: Color)) -> some View {
-        let isSelected = profileStore.avatarSource == .preset(preset.symbol)
+    private func presetImageButton(_ assetName: String) -> some View {
+        let isSelected = profileStore.avatarSource == .preset(assetName)
         return Button {
-            profileStore.updateAvatar(preset: preset.symbol)
+            profileStore.updateAvatar(preset: assetName)
         } label: {
-            Image(systemName: preset.symbol)
-                .font(.system(size: 24))
-                .foregroundColor(.white)
+            Image(assetName)
+                .resizable()
+                .scaledToFill()
                 .frame(width: 56, height: 56)
-                .background(preset.color)
                 .clipShape(Circle())
                 .overlay(
                     Circle()
@@ -131,8 +102,6 @@ struct AvatarPickerView: View {
                 )
         }
     }
-
-    // MARK: - Photo Selection
 
     private func handlePhotoSelection(_ item: PhotosPickerItem?) {
         guard let item else { return }

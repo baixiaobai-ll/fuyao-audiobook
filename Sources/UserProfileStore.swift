@@ -1,10 +1,31 @@
 import SwiftUI
 import UIKit
 
+// MARK: - 预设卡通头像（与 Assets 中 avatar_preset_0 … 对应）
+
+enum AvatarPresetCatalog {
+    static let defaultId = "avatar_preset_0"
+    /// 与 `App/Assets.xcassets/avatar_preset_*.imageset` 一致
+    static let imageAssetNames: [String] = (0..<16).map { "avatar_preset_\($0)" }
+    /// 旧版 SF Symbol 预设 → 迁移到上面对应下标
+    private static let legacySymbolOrder: [String] = [
+        "person.fill", "star.fill", "heart.fill", "leaf.fill",
+        "flame.fill", "book.fill", "music.note", "gamecontroller.fill"
+    ]
+
+    static func normalizedPresetId(_ raw: String) -> String {
+        if raw.hasPrefix("avatar_preset_") { return raw }
+        if let i = legacySymbolOrder.firstIndex(of: raw), i < imageAssetNames.count {
+            return imageAssetNames[i]
+        }
+        return defaultId
+    }
+}
+
 // MARK: - AvatarSource
 
 enum AvatarSource: Codable, Equatable {
-    case preset(String)   // SF Symbol 名
+    case preset(String)   // 资源图名 avatar_preset_n，或旧版 SF Symbol（会迁移）
     case custom(String)   // Documents/UserAvatar/ 下的文件名
 
     private enum CodingKeys: String, CodingKey {
@@ -33,7 +54,7 @@ enum AvatarSource: Codable, Equatable {
         case "custom":
             self = .custom(value)
         default:
-            self = .preset("person.fill")
+            self = .preset(AvatarPresetCatalog.defaultId)
         }
     }
 }
@@ -44,7 +65,7 @@ private struct UserProfile: Codable {
     var isLoggedIn: Bool = false
     var phone: String = ""
     var nickname: String = ""
-    var avatarSource: AvatarSource = .preset("person.fill")
+    var avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
 }
 
 // MARK: - UserProfileStore
@@ -54,7 +75,7 @@ final class UserProfileStore: ObservableObject {
     @Published var isLoggedIn: Bool = false
     @Published var phone: String = ""
     @Published var nickname: String = ""
-    @Published var avatarSource: AvatarSource = .preset("person.fill")
+    @Published var avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
 
     private static let storageKey = "userprofile_data"
 
@@ -73,7 +94,7 @@ final class UserProfileStore: ObservableObject {
         self.isLoggedIn = true
         self.phone = phone
         self.nickname = "书友\(String(phone.suffix(4)))"
-        self.avatarSource = .preset("person.fill")
+        self.avatarSource = .preset(AvatarPresetCatalog.defaultId)
         save()
     }
 
@@ -81,7 +102,7 @@ final class UserProfileStore: ObservableObject {
         isLoggedIn = false
         phone = ""
         nickname = ""
-        avatarSource = .preset("person.fill")
+        avatarSource = .preset(AvatarPresetCatalog.defaultId)
         save()
     }
 
@@ -150,6 +171,13 @@ final class UserProfileStore: ObservableObject {
         isLoggedIn = profile.isLoggedIn
         phone = profile.phone
         nickname = profile.nickname
-        avatarSource = profile.avatarSource
+        switch profile.avatarSource {
+        case .preset(let id):
+            let normalized = AvatarPresetCatalog.normalizedPresetId(id)
+            avatarSource = .preset(normalized)
+            if normalized != id { save() }
+        case .custom:
+            avatarSource = profile.avatarSource
+        }
     }
 }
