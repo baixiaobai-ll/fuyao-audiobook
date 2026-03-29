@@ -11,9 +11,19 @@ class BookshelfStore: ObservableObject {
     }
 
     func addBook(_ book: Book) {
-        guard !books.contains(where: { $0.id == book.id }) else { return }
+        guard existingBook(matching: book) == nil else { return }
         books.append(book)
         save()
+    }
+
+    /// 书架上是否已有与 `book` 逻辑相同的书（发现页每次进入可能生成新 UUID）
+    func containsSameBook(as book: Book) -> Bool {
+        existingBook(matching: book) != nil
+    }
+
+    /// 返回书架上已存在的同书记录（用于统一缓存 id、展示「已添加」）
+    func existingBook(matching book: Book) -> Book? {
+        books.first { $0.isSameLogicalBook(as: book) }
     }
 
     func removeBook(id: UUID) {

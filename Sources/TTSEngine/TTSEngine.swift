@@ -348,7 +348,14 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             var accumulated = Data()
-            var done = false
+            var resumed = false
+
+            func resumeOnce(with result: Result<AudioData, Error>) {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(with: result)
+            }
+
             let task = URLSession.shared.webSocketTask(with: url)
             task.resume()
 
@@ -389,13 +396,14 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
             guard let jsonData = try? JSONSerialization.data(withJSONObject: body),
                   let jsonStr = String(data: jsonData, encoding: .utf8) else {
-                continuation.resume(throwing: TTSError.invalidConfiguration)
+                resumeOnce(with: .failure(TTSError.invalidConfiguration))
                 return
             }
 
             task.send(.string(jsonStr)) { err in
                 if let err = err {
-                    continuation.resume(throwing: TTSError.apiError(err.localizedDescription))
+                    task.cancel()
+                    resumeOnce(with: .failure(TTSError.apiError(err.localizedDescription)))
                 }
             }
 
@@ -403,7 +411,8 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                 task.receive { result in
                     switch result {
                     case .failure(let err):
-                        if !done { continuation.resume(throwing: TTSError.apiError(err.localizedDescription)) }
+                        task.cancel()
+                        resumeOnce(with: .failure(TTSError.apiError(err.localizedDescription)))
                     case .success(let msg):
                         var data: Data?
                         switch msg {
@@ -413,7 +422,8 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                         }
                         guard let d = data,
                               let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-                            if !done { continuation.resume(throwing: TTSError.audioProcessingError) }
+                            task.cancel()
+                            resumeOnce(with: .failure(TTSError.audioProcessingError))
                             return
                         }
                         let code = (json["header"] as? [String: Any])?["code"] as? Int ?? 0
@@ -422,11 +432,8 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                         if code != 0 {
                             let errMsg = (json["header"] as? [String: Any])?["message"] as? String ?? "Unknown"
                             NSLog("🚨 讯飞超拟人错误 code=%d message=%@", code, errMsg)
-                            if !done {
-                                done = true
-                                task.cancel()
-                                continuation.resume(throwing: TTSError.apiError("讯飞超拟人错误 \(code): \(errMsg)"))
-                            }
+                            task.cancel()
+                            resumeOnce(with: .failure(TTSError.apiError("讯飞超拟人错误 \(code): \(errMsg)")))
                             return
                         }
                         if let payload = json["payload"] as? [String: Any],
@@ -439,12 +446,9 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                         print("🔍 超拟人状态: status=\(status), accumulated=\(accumulated.count) bytes")
                         if status == 2 {
                             task.cancel()
-                            if !done {
-                                done = true
-                                let result = AudioData(data: accumulated, format: .mp3,
-                                    duration: self.estimateDuration(text: text), sampleRate: 24000)
-                                continuation.resume(returning: result)
-                            }
+                            let audioResult = AudioData(data: accumulated, format: .mp3,
+                                duration: self.estimateDuration(text: text), sampleRate: 24000)
+                            resumeOnce(with: .success(audioResult))
                         } else {
                             receive()
                         }

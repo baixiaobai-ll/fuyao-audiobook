@@ -42,6 +42,7 @@ struct ContentView: View {
                 }
 
             NowPlayingView()
+                .environmentObject(store)
                 .tabItem {
                     Label("播放", image: "tab_play")
                 }

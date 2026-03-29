@@ -46,4 +46,5 @@ targets:
       SWIFT_VERSION: "5"
       TARGETED_DEVICE_FAMILY: "1,2"
       CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: ""
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"

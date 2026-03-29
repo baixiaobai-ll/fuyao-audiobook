@@ -33,32 +33,16 @@ struct FuyaoApp: App {
 }
 
 struct SplashView: View {
-    @State private var scale: CGFloat = 1.05
-    @State private var opacity: Double = 0
-
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color(red: 0.93, green: 0.95, blue: 0.98)
-                    .ignoresSafeArea()
+        ZStack {
+            Color(red: 0.91, green: 0.85, blue: 0.80)
+                .ignoresSafeArea()
 
-                Image("splash")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .scaleEffect(scale)
-                    .clipped()
-                    .ignoresSafeArea()
-            }
-            .opacity(opacity)
-        }
-        .onAppear {
-            withAnimation(.easeIn(duration: 0.3)) {
-                opacity = 1
-            }
-            withAnimation(.easeInOut(duration: 3.0)) {
-                scale = 1.0
-            }
+            Image("splash")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .ignoresSafeArea()
         }
     }
 }

@@ -18,6 +18,11 @@ struct BookDetailView: View {
 
     private let engine = BookSourceEngine()
 
+    /// 书架上的同书记录（笔趣阁多次进入可能 UUID 不同）
+    private var shelfBook: Book {
+        store.existingBook(matching: book) ?? book
+    }
+
     var body: some View {
         List {
             Section {
@@ -35,20 +40,29 @@ struct BookDetailView: View {
                 }
                 .padding(.vertical, 4)
 
-                if !store.containsBook(id: book.id) {
+                if store.containsSameBook(as: book) {
+                    HStack {
+                        Text("已添加")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(role: .destructive, action: {
+                            if let existing = store.existingBook(matching: book) {
+                                store.removeBook(id: existing.id)
+                            }
+                        }) {
+                            Label("从书架移除", systemImage: "trash")
+                        }
+                    }
+                } else {
                     Button("加入书架") {
                         store.addBook(book)
                         if !chapters.isEmpty {
-                            store.updateChapters(bookId: book.id, chapters: chapters)
+                            let sid = store.existingBook(matching: book)?.id ?? book.id
+                            store.updateChapters(bookId: sid, chapters: chapters)
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                } else {
-                    Button(role: .destructive, action: {
-                        store.removeBook(id: book.id)
-                    }) {
-                        Label("从书架移除", systemImage: "trash")
-                    }
                 }
             }
 
@@ -111,8 +125,13 @@ struct BookDetailView: View {
     // MARK: - Load Chapters
 
     private func loadChapters() {
+        if let existing = store.existingBook(matching: book), !existing.chapters.isEmpty {
+            chapters = existing.chapters
+            return
+        }
         if let stored = store.books.first(where: { $0.id == book.id }), !stored.chapters.isEmpty {
-            chapters = stored.chapters; return
+            chapters = stored.chapters
+            return
         }
         if !book.chapters.isEmpty { chapters = book.chapters; return }
 
@@ -122,7 +141,8 @@ struct BookDetailView: View {
             do {
                 let fetched = try await engine.fetchChapters(bookId: bookId)
                 chapters = fetched
-                store.updateChapters(bookId: book.id, chapters: fetched)
+                let sid = store.existingBook(matching: book)?.id ?? book.id
+                store.updateChapters(bookId: sid, chapters: fetched)
             } catch {
                 errorMessage = "加载章节失败: \(error.localizedDescription)"
             }
@@ -133,7 +153,6 @@ struct BookDetailView: View {
     // MARK: - Play Chapter
 
     private func playChapter(_ chapter: Chapter) {
-        // Already loaded - just navigate
         if loadedChapterIndex == chapter.index, player.currentPlaylist != nil {
             currentChapterTitle = chapter.title
             navigateToPlayer = true
@@ -148,61 +167,29 @@ struct BookDetailView: View {
 
         let chTitle = chapter.title
         let chIndex = chapter.index
+        let shelf = shelfBook
+        let chList = chapters
+
         generationTask = Task {
             do {
-                let content = try await fetchContent(for: chapter)
-                guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw BookError.emptyContent
-                }
-                let maxChars = 500
-                let processedContent = content.count > maxChars
-                    ? String(content.prefix(maxChars))
-                    : content
-                let generator = AudioBookGenerator(
-                    aiApiKey: Config.aiApiKey,
-                    ttsApiKey: Config.ttsApiKey,
-                    aiProvider: Config.aiProvider,
-                    ttsProvider: Config.ttsProvider
-                )
-                let existingBindings = store.books.first(where: { $0.id == book.id })?.voiceBindings ?? [:]
                 try Task.checkCancellation()
-                let playlist = try await generator.generate(
-                    text: processedContent,
-                    existingVoiceBindings: existingBindings,
-                    progressHandler: { progress in
-                        let msg = progress.message
-                        Task { @MainActor in statusMessage = msg }
-                    },
-                    onItemReady: { item in
-                        Task { @MainActor in
-                            if item.order == 0 {
-                                player.load(playlist: Playlist(title: chTitle, items: [item]))
-                                player.play()
-                                isGenerating = false
-                                generatingChapterIndex = nil
-                                loadedChapterIndex = chIndex
-                                navigateToPlayer = true
-                            } else {
-                                player.append(item: item)
-                            }
-                        }
-                    },
-                    onVoiceBindingsUpdated: { newBindings in
-                        Task { @MainActor in
-                            store.updateVoiceBindings(bookId: book.id, bindings: newBindings)
-                        }
+                try await BookChapterPlayback.play(
+                    shelfBook: shelf,
+                    chapter: chapter,
+                    allChapters: chList,
+                    store: store,
+                    player: player,
+                    onProgressMessage: { msg in statusMessage = msg },
+                    onFirstPlaybackStarted: {
+                        isGenerating = false
+                        generatingChapterIndex = nil
+                        loadedChapterIndex = chIndex
+                        currentChapterTitle = chTitle
+                        navigateToPlayer = true
                     }
                 )
-                // All segments done - update session and ensure player loaded
-                if player.currentPlaylist == nil {
-                    player.load(playlist: playlist)
-                    player.play()
-                    isGenerating = false
-                    generatingChapterIndex = nil
-                    loadedChapterIndex = chIndex
-                    navigateToPlayer = true
-                }
-                store.updateLastRead(bookId: book.id, chapterIndex: chIndex)
+                isGenerating = false
+                generatingChapterIndex = nil
             } catch is CancellationError {
                 isGenerating = false
                 generatingChapterIndex = nil
@@ -211,35 +198,6 @@ struct BookDetailView: View {
                 isGenerating = false
                 generatingChapterIndex = nil
             }
-        }
-    }
-
-    private func fetchContent(for chapter: Chapter) async throws -> String {
-        // Check local cache first
-        if let cached = await ChapterContentManager.shared.getContent(
-            bookId: book.id, chapterIndex: chapter.index), !cached.isEmpty {
-            return cached
-        }
-
-        if book.source == .local {
-            throw BookError.noURL
-        }
-
-        // Fetch via JSON API using bookId + chapterIndex+1 as chapterId
-        guard let bookId = book.bookId else { throw BookError.noURL }
-        let content = try await engine.fetchChapterContent(bookId: bookId, chapterId: chapter.index + 1)
-        try? await ChapterContentManager.shared.saveContent(
-            bookId: book.id, chapterIndex: chapter.index, content: content)
-        return content
-    }
-}
-
-private enum BookError: LocalizedError {
-    case emptyContent, noURL
-    var errorDescription: String? {
-        switch self {
-        case .emptyContent: return "章节内容为空"
-        case .noURL: return "章节无有效地址"
         }
     }
 }

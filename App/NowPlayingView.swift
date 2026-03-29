@@ -2,11 +2,14 @@ import SwiftUI
 
 struct NowPlayingView: View {
     @EnvironmentObject var player: AudioBookPlayer
+    @EnvironmentObject var store: BookshelfStore
 
     @State private var isDragging = false
     @State private var dragValue: Double = 0
     @State private var showSleepTimer = false
     @State private var showPlaylist = false
+    @State private var chapterSwitchError: String?
+    @State private var isSwitchingChapter = false
 
     private let rates: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -21,6 +24,24 @@ struct NowPlayingView: View {
             }
             .navigationTitle("播放中")
             .navigationBarTitleDisplayMode(.inline)
+            .overlay {
+                if isSwitchingChapter {
+                    ZStack {
+                        Color.black.opacity(0.2).ignoresSafeArea()
+                        ProgressView("切换章节…")
+                            .padding(24)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
+            .alert("切换失败", isPresented: Binding(
+                get: { chapterSwitchError != nil },
+                set: { if !$0 { chapterSwitchError = nil } }
+            )) {
+                Button("好", role: .cancel) { chapterSwitchError = nil }
+            } message: {
+                if let e = chapterSwitchError { Text(e) }
+            }
         }
     }
 
@@ -48,40 +69,49 @@ struct NowPlayingView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            // 书名 / 章节标题
             VStack(spacing: 8) {
-                Text(player.currentPlaylist?.title ?? "")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-
-                if let item = player.currentPlaylist?.currentItem {
-                    Text("第 \(item.order + 1) 段")
-                        .font(.subheadline)
+                if let ctx = player.currentPlaylist?.chapterContext {
+                    Text(ctx.bookTitle)
+                        .font(.headline)
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Text(currentChapterTitle(from: ctx))
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                } else {
+                    Text(player.currentPlaylist?.title ?? "")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
             }
 
-            // 大图标
             Image(systemName: "headphones")
                 .font(.system(size: 100))
                 .foregroundColor(.accentColor)
                 .padding(.vertical, 24)
 
-            // 进度条
             progressSection
 
-            // 倍速选择
             rateSelector
 
-            // 控制按钮
             controlButtons
 
-            // 底部功能行
             bottomActions
 
             Spacer()
         }
         .padding(.horizontal)
+    }
+
+    private func currentChapterTitle(from ctx: PlaybackChapterContext) -> String {
+        if let t = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title, !t.isEmpty {
+            return t
+        }
+        return player.currentPlaylist?.title ?? ""
     }
 
     // MARK: - Progress
@@ -101,7 +131,7 @@ struct NowPlayingView: View {
                 in: 0...safeMaxDuration,
                 onEditingChanged: { editing in
                     if !editing {
-                        player.seek(to: dragValue)
+                        player.seekToAggregatedTime(dragValue)
                         isDragging = false
                     }
                 }
@@ -171,11 +201,11 @@ struct NowPlayingView: View {
 
     private var controlButtons: some View {
         HStack(spacing: 48) {
-            Button { player.previous() } label: {
+            Button { goBackward() } label: {
                 Image(systemName: "backward.fill")
                     .font(.title)
             }
-            .disabled(!(player.currentPlaylist?.hasPrevious ?? false))
+            .disabled(isSwitchingChapter || !chapterNavBackwardEnabled())
 
             Button {
                 if player.state == .playing {
@@ -188,11 +218,11 @@ struct NowPlayingView: View {
                     .font(.system(size: 60))
             }
 
-            Button { player.next() } label: {
+            Button { goForward() } label: {
                 Image(systemName: "forward.fill")
                     .font(.title)
             }
-            .disabled(!(player.currentPlaylist?.hasNext ?? false))
+            .disabled(isSwitchingChapter || !chapterNavForwardEnabled())
         }
         .foregroundColor(.primary)
         .padding(.vertical, 8)
@@ -206,11 +236,47 @@ struct NowPlayingView: View {
         }
     }
 
+    private func chapterNavBackwardEnabled() -> Bool {
+        if let ctx = player.currentPlaylist?.chapterContext, ctx.chapters.count > 1 {
+            guard let pos = ctx.chapters.firstIndex(where: { $0.index == ctx.currentChapterIndex }) else { return false }
+            return pos > 0
+        }
+        return player.currentPlaylist?.hasPrevious ?? false
+    }
+
+    private func chapterNavForwardEnabled() -> Bool {
+        if let ctx = player.currentPlaylist?.chapterContext, ctx.chapters.count > 1 {
+            guard let pos = ctx.chapters.firstIndex(where: { $0.index == ctx.currentChapterIndex }) else { return false }
+            return pos + 1 < ctx.chapters.count
+        }
+        return player.currentPlaylist?.hasNext ?? false
+    }
+
+    private func goBackward() {
+        if let ctx = player.currentPlaylist?.chapterContext, ctx.chapters.count > 1 {
+            guard let pos = ctx.chapters.firstIndex(where: { $0.index == ctx.currentChapterIndex }), pos > 0 else { return }
+            let prev = ctx.chapters[pos - 1]
+            Task { await switchToChapter(index: prev.index) }
+        } else {
+            player.previous()
+        }
+    }
+
+    private func goForward() {
+        if let ctx = player.currentPlaylist?.chapterContext, ctx.chapters.count > 1 {
+            guard let pos = ctx.chapters.firstIndex(where: { $0.index == ctx.currentChapterIndex }),
+                  pos + 1 < ctx.chapters.count else { return }
+            let next = ctx.chapters[pos + 1]
+            Task { await switchToChapter(index: next.index) }
+        } else {
+            player.next()
+        }
+    }
+
     // MARK: - Bottom Actions
 
     private var bottomActions: some View {
         HStack(spacing: 40) {
-            // 循环模式
             Button {
                 cycleRepeatMode()
             } label: {
@@ -223,7 +289,6 @@ struct NowPlayingView: View {
             }
             .foregroundColor(player.config.repeatMode == .none ? .secondary : .accentColor)
 
-            // 定时关闭
             Button { showSleepTimer = true } label: {
                 VStack(spacing: 4) {
                     Image(systemName: "timer")
@@ -248,12 +313,11 @@ struct NowPlayingView: View {
                 Button("取消", role: .cancel) {}
             }
 
-            // 段落列表
             Button { showPlaylist = true } label: {
                 VStack(spacing: 4) {
                     Image(systemName: "list.bullet")
                         .font(.title3)
-                    Text("段落")
+                    Text("目录")
                         .font(.caption2)
                 }
             }
@@ -275,7 +339,7 @@ struct NowPlayingView: View {
     private var repeatLabel: String {
         switch player.config.repeatMode {
         case .none: return "不循环"
-        case .one: return "单段"
+        case .one: return "单章"
         case .all: return "列表"
         }
     }
@@ -288,27 +352,41 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Playlist Sheet
+    // MARK: - Sheet（章节目录）
 
     private var playlistSheet: some View {
         NavigationStack {
             List {
-                if let playlist = player.currentPlaylist {
+                if let ctx = player.currentPlaylist?.chapterContext, !ctx.chapters.isEmpty {
+                    ForEach(ctx.chapters, id: \.index) { summary in
+                        Button {
+                            Task { await switchToChapter(index: summary.index) }
+                        } label: {
+                            HStack {
+                                Text(summary.title)
+                                    .font(.subheadline)
+                                    .fontWeight(summary.index == ctx.currentChapterIndex ? .bold : .regular)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(2)
+                                Spacer()
+                                if summary.index == ctx.currentChapterIndex {
+                                    Image(systemName: "speaker.wave.2.fill")
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+                        }
+                    }
+                } else if let playlist = player.currentPlaylist {
                     ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
                         Button {
                             player.jumpTo(index: index)
                             showPlaylist = false
                         } label: {
                             HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("第 \(item.order + 1) 段")
-                                        .font(.subheadline)
-                                        .fontWeight(index == playlist.currentIndex ? .bold : .regular)
-                                    Text(item.segment.text.prefix(50) + (item.segment.text.count > 50 ? "..." : ""))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(2)
-                                }
+                                Text(item.segment.text.prefix(60) + (item.segment.text.count > 60 ? "…" : ""))
+                                    .font(.subheadline)
+                                    .fontWeight(index == playlist.currentIndex ? .bold : .regular)
+                                    .lineLimit(2)
                                 Spacer()
                                 if index == playlist.currentIndex {
                                     Image(systemName: "speaker.wave.2.fill")
@@ -320,13 +398,75 @@ struct NowPlayingView: View {
                     }
                 }
             }
-            .navigationTitle("段落列表")
+            .navigationTitle(player.currentPlaylist?.chapterContext != nil ? "章节目录" : "播放列表")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { showPlaylist = false }
                 }
             }
+        }
+    }
+
+    // MARK: - Chapter switch
+
+    private func resolvedBook(for ctx: PlaybackChapterContext) -> Book? {
+        if let b = store.books.first(where: { $0.id == ctx.shelfBookId }) {
+            return b
+        }
+        return Book(
+            id: ctx.shelfBookId,
+            title: ctx.bookTitle,
+            author: "",
+            bookId: ctx.apiBookId,
+            chapters: ctx.chapters.map { Chapter(title: $0.title, index: $0.index, isDownloaded: true) },
+            source: ctx.bookSource
+        )
+    }
+
+    private func switchToChapter(index: Int) async {
+        guard let ctx = player.currentPlaylist?.chapterContext else { return }
+        guard index != ctx.currentChapterIndex else {
+            await MainActor.run { showPlaylist = false }
+            return
+        }
+        guard let summary = ctx.chapters.first(where: { $0.index == index }) else { return }
+
+        await MainActor.run {
+            isSwitchingChapter = true
+            showPlaylist = false
+        }
+        defer {
+            Task { @MainActor in isSwitchingChapter = false }
+        }
+
+        guard let resolved = resolvedBook(for: ctx) else {
+            await MainActor.run { chapterSwitchError = "无法解析书籍信息" }
+            return
+        }
+
+        let chapter = resolved.chapters.first { $0.index == summary.index }
+            ?? Chapter(title: summary.title, index: summary.index, isDownloaded: true)
+        let allChapters: [Chapter]
+        if resolved.chapters.isEmpty {
+            allChapters = ctx.chapters.map { Chapter(title: $0.title, index: $0.index, isDownloaded: true) }
+        } else {
+            allChapters = resolved.chapters
+        }
+        let sorted = allChapters.sorted { $0.index < $1.index }
+
+        do {
+            try await BookChapterPlayback.play(
+                shelfBook: resolved,
+                chapter: chapter,
+                allChapters: sorted,
+                store: store,
+                player: player,
+                onProgressMessage: { _ in },
+                onFirstPlaybackStarted: {}
+            )
+        } catch {
+            await MainActor.run { chapterSwitchError = error.localizedDescription }
         }
     }
 

@@ -36,6 +36,46 @@ public struct PlaybackItem: Codable, Identifiable, Sendable {
     }
 }
 
+// MARK: - 章节播放上下文（整章多段 TTS 时用于目录与进度）
+
+/// 章节目录项（仅索引与标题，用于播放页切换章节）
+public struct PlaybackChapterSummary: Codable, Hashable, Sendable {
+    public var index: Int
+    public var title: String
+
+    public init(index: Int, title: String) {
+        self.index = index
+        self.title = title
+    }
+}
+
+/// 当前播放所属书的章节信息
+public struct PlaybackChapterContext: Codable, Hashable, Sendable {
+    /// 书架上的书籍 id（缓存正文与音色绑定）
+    public var shelfBookId: UUID
+    public var apiBookId: String?
+    public var bookSource: BookSource
+    public var bookTitle: String
+    public var chapters: [PlaybackChapterSummary]
+    public var currentChapterIndex: Int
+
+    public init(
+        shelfBookId: UUID,
+        apiBookId: String?,
+        bookSource: BookSource,
+        bookTitle: String,
+        chapters: [PlaybackChapterSummary],
+        currentChapterIndex: Int
+    ) {
+        self.shelfBookId = shelfBookId
+        self.apiBookId = apiBookId
+        self.bookSource = bookSource
+        self.bookTitle = bookTitle
+        self.chapters = chapters
+        self.currentChapterIndex = currentChapterIndex
+    }
+}
+
 // MARK: - 播放列表
 
 /// 播放列表
@@ -45,17 +85,21 @@ public struct Playlist: Codable, Identifiable {
     public var items: [PlaybackItem]
     public var currentIndex: Int
     public var totalDuration: TimeInterval
+    /// 若存在，表示当前列表为某一整章的连续分段，进度条按章聚合
+    public var chapterContext: PlaybackChapterContext?
 
     public init(
         id: UUID = UUID(),
         title: String,
         items: [PlaybackItem] = [],
-        currentIndex: Int = 0
+        currentIndex: Int = 0,
+        chapterContext: PlaybackChapterContext? = nil
     ) {
         self.id = id
         self.title = title
         self.items = items
         self.currentIndex = currentIndex
+        self.chapterContext = chapterContext
         self.totalDuration = items.reduce(0) { $0 + $1.audioData.duration }
     }
 

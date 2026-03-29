@@ -151,7 +151,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
     }
 
-    /// 跳转到指定位置
+    /// 跳转到指定位置（当前分段内）
     func seek(to time: TimeInterval) {
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         player?.seek(to: cmTime) { [weak self] completed in
@@ -159,6 +159,58 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 self?.updateProgress()
             }
         }
+    }
+
+    /// 按「整章」聚合时间跳转（跨当前列表中的多个 TTS 分段）
+    func seekToAggregatedTime(_ target: TimeInterval) {
+        guard var playlist = currentPlaylist, !playlist.items.isEmpty else { return }
+        if playlist.items.count == 1 {
+            seek(to: max(0, target))
+            updateProgress()
+            return
+        }
+        let total = playlist.items.reduce(0) { $0 + safeDuration($1.audioData.duration) }
+        guard total > 0 else {
+            seek(to: 0)
+            updateProgress()
+            return
+        }
+        let clamped = max(0, min(target, total))
+        var accum: TimeInterval = 0
+        var targetIndex = 0
+        var localTime: TimeInterval = 0
+        for (i, item) in playlist.items.enumerated() {
+            let d = safeDuration(item.audioData.duration)
+            let segmentEnd = accum + d
+            if clamped < segmentEnd || i == playlist.items.count - 1 {
+                targetIndex = i
+                localTime = clamped - accum
+                if d > 0 {
+                    localTime = min(max(0, localTime), d)
+                } else {
+                    localTime = 0
+                }
+                break
+            }
+            accum = segmentEnd
+        }
+        if targetIndex == playlist.currentIndex {
+            seek(to: localTime)
+            return
+        }
+        if playlist.jumpTo(index: targetIndex) {
+            currentPlaylist = playlist
+            cleanupPlayer()
+            play()
+            let seekLocal = localTime
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.seek(to: seekLocal)
+            }
+        }
+    }
+
+    private func safeDuration(_ d: TimeInterval) -> TimeInterval {
+        (d.isFinite && d > 0) ? d : 0
     }
 
     /// 跳转到指定项
@@ -277,25 +329,49 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         )
     }
 
-    /// 更新进度
+    /// 更新进度（多分段时按整章聚合当前时间与总时长）
     private func updateProgress() {
         guard let player = player,
-              let currentItem = player.currentItem,
+              let avItem = player.currentItem,
               let playlist = currentPlaylist else {
             return
         }
 
-        let currentTime = CMTimeGetSeconds(player.currentTime())
-        let duration = CMTimeGetSeconds(currentItem.duration)
+        let localTime = CMTimeGetSeconds(player.currentTime())
+        let localDuration = CMTimeGetSeconds(avItem.duration)
+        let safeLocalTime = localTime.isFinite ? localTime : 0
+        let safeLocalDuration = localDuration.isFinite && localDuration > 0 ? localDuration : 0
 
-        let safeCurrentTime = currentTime.isFinite ? currentTime : 0
-        let safeDuration = duration.isFinite && duration > 0 ? duration : 0
+        let totalItems = playlist.items.count
+        if totalItems <= 1 {
+            progress = PlaybackProgress(
+                currentTime: safeLocalTime,
+                duration: safeLocalDuration,
+                currentItemIndex: playlist.currentIndex,
+                totalItems: totalItems
+            )
+            return
+        }
+
+        var before: TimeInterval = 0
+        for i in 0..<min(playlist.currentIndex, playlist.items.count) {
+            before += safeDuration(playlist.items[i].audioData.duration)
+        }
+        var totalChapter: TimeInterval = 0
+        for item in playlist.items {
+            totalChapter += safeDuration(item.audioData.duration)
+        }
+        if totalChapter <= 0 {
+            totalChapter = safeLocalDuration
+        }
+
+        let aggregatedCurrent = before + min(safeLocalTime, safeLocalDuration > 0 ? safeLocalDuration : safeLocalTime)
 
         progress = PlaybackProgress(
-            currentTime: safeCurrentTime,
-            duration: safeDuration,
+            currentTime: aggregatedCurrent,
+            duration: totalChapter,
             currentItemIndex: playlist.currentIndex,
-            totalItems: playlist.items.count
+            totalItems: totalItems
         )
     }
 
@@ -380,16 +456,21 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
-    /// 保存播放会话
+    /// 保存播放会话（始终保存当前 AVPlayer 分段内时间，便于恢复）
     private func saveSession() {
         guard let playlist = currentPlaylist else { return }
-
+        let localTime: TimeInterval
+        if let p = player, let item = p.currentItem {
+            let t = CMTimeGetSeconds(p.currentTime())
+            localTime = t.isFinite ? t : 0
+        } else {
+            localTime = 0
+        }
         let session = PlaybackSession(
             playlistId: playlist.id,
             currentItemIndex: playlist.currentIndex,
-            currentTime: progress.currentTime
+            currentTime: localTime
         )
-
         sessionManager.saveSession(session)
     }
 

@@ -13,6 +13,20 @@ public struct Book: Codable, Identifiable, Sendable {
     public var source: BookSource
     public var voiceBindings: [String: String]
 
+    /// 是否为同一本书（用于书架去重：笔趣阁按 `bookId`，本地按 `id`）
+    public func isSameLogicalBook(as other: Book) -> Bool {
+        guard source == other.source else { return false }
+        switch source {
+        case .biquge:
+            if let a = bookId, let b = other.bookId, !a.isEmpty, !b.isEmpty {
+                return a == b
+            }
+            return id == other.id
+        case .local:
+            return id == other.id
+        }
+    }
+
     public init(
         id: UUID = UUID(),
         title: String,
