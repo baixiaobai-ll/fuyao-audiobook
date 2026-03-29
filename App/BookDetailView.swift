@@ -4,6 +4,7 @@ struct BookDetailView: View {
     let book: Book
     @EnvironmentObject var store: BookshelfStore
     @EnvironmentObject var player: AudioBookPlayer
+    @EnvironmentObject var tabRouter: MainTabRouter
 
     @State private var chapters: [Chapter] = []
     @State private var isLoadingChapters = false
@@ -11,9 +12,7 @@ struct BookDetailView: View {
     @State private var generationTask: Task<Void, Never>? = nil
     @State private var generatingChapterIndex: Int? = nil
     @State private var statusMessage = ""
-    @State private var navigateToPlayer = false
     @State private var errorMessage: String? = nil
-    @State private var currentChapterTitle = ""
     @State private var loadedChapterIndex: Int? = nil
 
     private let engine = BookSourceEngine()
@@ -26,10 +25,12 @@ struct BookDetailView: View {
     var body: some View {
         List {
             Section {
-                HStack(spacing: 16) {
-                    Image(systemName: "book.closed.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.accentColor)
+                HStack(alignment: .top, spacing: 16) {
+                    BookCoverView(
+                        coverURL: book.coverURL,
+                        title: book.title,
+                        size: CGSize(width: 72, height: 100)
+                    )
                     VStack(alignment: .leading, spacing: 4) {
                         Text(book.title).font(.headline)
                         Text(book.author).font(.subheadline).foregroundColor(.secondary)
@@ -116,9 +117,6 @@ struct BookDetailView: View {
         }
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(isPresented: $navigateToPlayer) {
-            PlayerView(player: player, chapterTitle: currentChapterTitle)
-        }
         .onAppear { loadChapters() }
     }
 
@@ -154,8 +152,7 @@ struct BookDetailView: View {
 
     private func playChapter(_ chapter: Chapter) {
         if loadedChapterIndex == chapter.index, player.currentPlaylist != nil {
-            currentChapterTitle = chapter.title
-            navigateToPlayer = true
+            tabRouter.openPlayTab()
             return
         }
 
@@ -163,9 +160,7 @@ struct BookDetailView: View {
         generatingChapterIndex = chapter.index
         statusMessage = "获取章节内容..."
         errorMessage = nil
-        currentChapterTitle = chapter.title
 
-        let chTitle = chapter.title
         let chIndex = chapter.index
         let shelf = shelfBook
         let chList = chapters
@@ -184,8 +179,7 @@ struct BookDetailView: View {
                         isGenerating = false
                         generatingChapterIndex = nil
                         loadedChapterIndex = chIndex
-                        currentChapterTitle = chTitle
-                        navigateToPlayer = true
+                        tabRouter.openPlayTab()
                     }
                 )
                 isGenerating = false

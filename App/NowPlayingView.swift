@@ -8,6 +8,9 @@ struct NowPlayingView: View {
     @State private var dragValue: Double = 0
     @State private var showSleepTimer = false
     @State private var showPlaylist = false
+    @State private var showChapterTextSheet = false
+    @State private var chapterTextBody: String?
+    @State private var chapterTextHint: String?
     @State private var chapterSwitchError: String?
     @State private var isSwitchingChapter = false
 
@@ -41,6 +44,9 @@ struct NowPlayingView: View {
                 Button("好", role: .cancel) { chapterSwitchError = nil }
             } message: {
                 if let e = chapterSwitchError { Text(e) }
+            }
+            .sheet(isPresented: $showChapterTextSheet) {
+                chapterTextReaderSheet
             }
         }
     }
@@ -89,9 +95,7 @@ struct NowPlayingView: View {
                 }
             }
 
-            Image(systemName: "headphones")
-                .font(.system(size: 100))
-                .foregroundColor(.accentColor)
+            playbackArtwork
                 .padding(.vertical, 24)
 
             progressSection
@@ -112,6 +116,97 @@ struct NowPlayingView: View {
             return t
         }
         return player.currentPlaylist?.title ?? ""
+    }
+
+    @ViewBuilder
+    private var playbackArtwork: some View {
+        if let ctx = player.currentPlaylist?.chapterContext {
+            Button(action: openChapterTextSheet) {
+                BookCoverView(
+                    coverURL: coverURLForPlayback(ctx: ctx),
+                    title: ctx.bookTitle,
+                    size: CGSize(width: 200, height: 280)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看章节正文")
+        } else {
+            Image(systemName: "headphones")
+                .font(.system(size: 100))
+                .foregroundColor(.accentColor)
+        }
+    }
+
+    private func coverURLForPlayback(ctx: PlaybackChapterContext) -> String? {
+        if let u = ctx.bookCoverURL, !u.isEmpty { return u }
+        return store.books.first(where: { $0.id == ctx.shelfBookId })?.coverURL
+    }
+
+    private func openChapterTextSheet() {
+        guard let ctx = player.currentPlaylist?.chapterContext else { return }
+        guard let book = resolvedBook(for: ctx) else { return }
+        let summary = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })
+        let chapterTitle = summary?.title ?? (player.currentPlaylist?.title ?? "正文")
+        let chapter = Chapter(title: chapterTitle, index: ctx.currentChapterIndex, isDownloaded: true)
+
+        chapterTextBody = nil
+        chapterTextHint = nil
+        showChapterTextSheet = true
+
+        Task { @MainActor in
+            do {
+                let text = try await BookChapterPlayback.fetchContent(
+                    shelfBookId: ctx.shelfBookId,
+                    book: book,
+                    chapter: chapter
+                )
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    chapterTextBody = text
+                } else {
+                    chapterTextHint = "章节内容为空"
+                }
+            } catch {
+                chapterTextHint = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    private var chapterTextReaderSheet: some View {
+        NavigationStack {
+            Group {
+                if let hint = chapterTextHint {
+                    VStack(spacing: 12) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text(hint)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let body = chapterTextBody {
+                    ScrollView {
+                        Text(body)
+                            .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    }
+                } else {
+                    ProgressView("加载正文…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle("章节正文")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { showChapterTextSheet = false }
+                }
+            }
+        }
     }
 
     // MARK: - Progress
@@ -418,6 +513,7 @@ struct NowPlayingView: View {
             id: ctx.shelfBookId,
             title: ctx.bookTitle,
             author: "",
+            coverURL: ctx.bookCoverURL,
             bookId: ctx.apiBookId,
             chapters: ctx.chapters.map { Chapter(title: $0.title, index: $0.index, isDownloaded: true) },
             source: ctx.bookSource

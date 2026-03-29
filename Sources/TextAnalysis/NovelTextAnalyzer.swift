@@ -237,20 +237,18 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         )
     }
 
-    /// 预处理文本
+    /// 预处理文本（与 `canonicalTextForPlayback` 一致，供分析与云端索引共用同一字节空间）
     private func preprocessText(_ text: String) -> String {
-        var processed = text
+        Self.canonicalTextForPlayback(text)
+    }
 
-        // 统一换行符
+    /// 与 `analyze` 内部使用的规范化文本一致；`textHash` 与 UTF-8 分段偏移均基于此串。
+    static func canonicalTextForPlayback(_ text: String) -> String {
+        var processed = text
         processed = processed.replacingOccurrences(of: "\r\n", with: "\n")
         processed = processed.replacingOccurrences(of: "\r", with: "\n")
-
-        // 移除多余空白
         processed = processed.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
-
-        // 移除过多的空行
         processed = processed.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-
         return processed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

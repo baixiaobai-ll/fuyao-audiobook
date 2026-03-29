@@ -5,8 +5,8 @@ import UIKit
 
 enum AvatarPresetCatalog {
     static let defaultId = "avatar_preset_0"
-    /// 与 `App/Assets.xcassets/avatar_preset_*.imageset` 一致
-    static let imageAssetNames: [String] = (0..<16).map { "avatar_preset_\($0)" }
+    /// 与 `App/Assets.xcassets/avatar_preset_*.imageset` 一致（0–15 原有，16–31 为新增四神兽表情套图）
+    static let imageAssetNames: [String] = (0..<32).map { "avatar_preset_\($0)" }
     /// 旧版 SF Symbol 预设 → 迁移到上面对应下标
     private static let legacySymbolOrder: [String] = [
         "person.fill", "star.fill", "heart.fill", "leaf.fill",

@@ -56,6 +56,8 @@ public struct PlaybackChapterContext: Codable, Hashable, Sendable {
     public var apiBookId: String?
     public var bookSource: BookSource
     public var bookTitle: String
+    /// 封面图 URL（发现/书架展示用；可选）
+    public var bookCoverURL: String?
     public var chapters: [PlaybackChapterSummary]
     public var currentChapterIndex: Int
 
@@ -64,6 +66,7 @@ public struct PlaybackChapterContext: Codable, Hashable, Sendable {
         apiBookId: String?,
         bookSource: BookSource,
         bookTitle: String,
+        bookCoverURL: String? = nil,
         chapters: [PlaybackChapterSummary],
         currentChapterIndex: Int
     ) {
@@ -71,6 +74,7 @@ public struct PlaybackChapterContext: Codable, Hashable, Sendable {
         self.apiBookId = apiBookId
         self.bookSource = bookSource
         self.bookTitle = bookTitle
+        self.bookCoverURL = bookCoverURL
         self.chapters = chapters
         self.currentChapterIndex = currentChapterIndex
     }

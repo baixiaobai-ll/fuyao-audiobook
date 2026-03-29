@@ -123,9 +123,10 @@ struct Config {
         return UserDefaults.standard.bool(forKey: "enableCache", defaultValue: true)
     }
 
-    /// 最大并发数
+    /// TTS/分段合成最大并发（讯飞等接口上限较高时可调大，建议不超过 100）。
     static var maxConcurrentTasks: Int {
-        return UserDefaults.standard.integer(forKey: "maxConcurrentTasks", defaultValue: 3)
+        let v = UserDefaults.standard.integer(forKey: "maxConcurrentTasks", defaultValue: 24)
+        return min(100, max(1, v))
     }
 
     // MARK: - 音频配置
@@ -152,6 +153,7 @@ struct Config {
 
 
     /// 自建发现页聚合 API 根地址（如 https://api.example.com），末尾无斜杠。未配置则只用笔趣阁直连。
+    /// 同一服务可实现 `GET/POST /v1/playback/analysis`：云端仅存**分析索引**（UTF-8 偏移、类型/角色/场景等），**不存正文**；正文始终在客户端拉取后再还原。
     static var discoverAPIBaseURL: String? {
         if let e = ProcessInfo.processInfo.environment["DISCOVER_API_BASE_URL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines), !e.isEmpty {
@@ -171,9 +173,16 @@ struct Config {
         return 2000
     }
 
-    /// 是否在生成过程中边下边播首段（关闭则整章生成完再播放，更流畅）。
+    /// 是否在生成过程中边下边播（默认开启；关闭则整章合成完再播，等待长）。
     static var streamPlaybackWhileGenerating: Bool {
-        UserDefaults.standard.bool(forKey: "streamPlaybackWhileGenerating")
+        UserDefaults.standard.bool(forKey: "streamPlaybackWhileGenerating", defaultValue: true)
+    }
+
+    /// 当前章播放到该进度（0～1）时开始预拉「下一章」正文到本地缓存。
+    static var chapterPrefetchProgressThreshold: Double {
+        let v = UserDefaults.standard.double(forKey: "chapterPrefetchProgressThreshold")
+        if v > 0, v < 1 { return v }
+        return 0.18
     }
 
     // MARK: - Private Methods
@@ -324,7 +333,8 @@ class ConfigHelper {
             UserDefaults.standard.set(true, forKey: "enableBackgroundMusic")
             UserDefaults.standard.set(true, forKey: "enableSoundEffects")
             UserDefaults.standard.set(true, forKey: "enableCache")
-            UserDefaults.standard.set(3, forKey: "maxConcurrentTasks")
+            UserDefaults.standard.set(24, forKey: "maxConcurrentTasks")
+            UserDefaults.standard.set(true, forKey: "streamPlaybackWhileGenerating")
             UserDefaults.standard.set(0.3, forKey: "backgroundMusicVolume")
             UserDefaults.standard.set(1.0, forKey: "voiceVolume")
             UserDefaults.standard.set(0.5, forKey: "soundEffectsVolume")
@@ -372,6 +382,8 @@ class ConfigHelper {
         print("   背景音乐: \(Config.enableBackgroundMusic)")
         print("   音效: \(Config.enableSoundEffects)")
         print("   缓存: \(Config.enableCache)")
-        print("   最大并发: \(Config.maxConcurrentTasks)")
+        print("   TTS 最大并发: \(Config.maxConcurrentTasks)（讯飞等接口上限 100，勿超过）")
+        print("   边播边生成: \(Config.streamPlaybackWhileGenerating)")
+        print("   下一章预取进度阈值: \(String(format: "%.0f%%", Config.chapterPrefetchProgressThreshold * 100))（实际会按段数/并发微调）")
     }
 }

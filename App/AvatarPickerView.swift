@@ -55,7 +55,6 @@ struct AvatarPickerView: View {
 
                 Spacer()
             }
-            .navigationTitle("更换头像")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

@@ -15,8 +15,15 @@ final class ChapterPrefetchCoordinator: @unchecked Sendable {
 
     func onPlaybackProgress(currentTime: TimeInterval, duration: TimeInterval, playlist: Playlist?) {
         guard let ctx = playlist?.chapterContext,
-              duration > 0,
-              currentTime / duration >= 0.35 else { return }
+              duration > 0 else { return }
+
+        let segEst = max(playlist?.items.count ?? 12, 4)
+        let threshold = PlaybackGenerationPacing.suggestedChapterPrefetchProgressThreshold(
+            estimatedSegmentCount: segEst,
+            concurrent: Config.maxConcurrentTasks,
+            baseThreshold: Config.chapterPrefetchProgressThreshold
+        )
+        guard currentTime / duration >= threshold else { return }
 
         guard let next = Self.nextChapterSummary(after: ctx.currentChapterIndex, in: ctx.chapters) else { return }
         let key = "\(ctx.shelfBookId.uuidString)|\(ctx.currentChapterIndex)|\(next.index)"

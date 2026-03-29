@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var store: BookshelfStore
+    @EnvironmentObject var tabRouter: MainTabRouter
 
     init() {
         let appearance = UITabBarAppearance()
@@ -28,29 +29,33 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView {
+        TabView(selection: $tabRouter.selectedTab) {
             BookshelfView()
                 .environmentObject(store)
                 .tabItem {
                     Label("书架", image: "tab_bookshelf")
                 }
+                .tag(MainTabRouter.Tab.bookshelf.rawValue)
 
             BookSearchView()
                 .environmentObject(store)
                 .tabItem {
                     Label("发现", image: "tab_discover")
                 }
+                .tag(MainTabRouter.Tab.discover.rawValue)
 
             NowPlayingView()
                 .environmentObject(store)
                 .tabItem {
                     Label("播放", image: "tab_play")
                 }
+                .tag(MainTabRouter.Tab.play.rawValue)
 
             ProfileView()
                 .tabItem {
                     Label("我的", image: "tab_profile")
                 }
+                .tag(MainTabRouter.Tab.profile.rawValue)
         }
         .tint(AppTheme.Colors.brandPrimary)
     }
@@ -60,4 +65,5 @@ struct ContentView: View {
     ContentView()
         .environmentObject(BookshelfStore())
         .environmentObject(AudioBookPlayer())
+        .environmentObject(MainTabRouter())
 }

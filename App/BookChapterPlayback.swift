@@ -61,6 +61,7 @@ enum BookChapterPlayback {
             apiBookId: shelfBook.bookId,
             bookSource: shelfBook.source,
             bookTitle: shelfBook.title,
+            bookCoverURL: shelfBook.coverURL,
             chapters: summaries,
             currentChapterIndex: chapter.index
         )
@@ -78,10 +79,16 @@ enum BookChapterPlayback {
         let startedInline = StartedFlag()
 
         let stream = Config.streamPlaybackWhileGenerating
+        let remoteCacheKey: PlaybackRemoteCacheKey? = {
+            guard shelfBook.source == .biquge, let bid = shelfBook.bookId, !bid.isEmpty else { return nil }
+            return PlaybackRemoteCacheKey(bookId: bid, chapterIndex: chapter.index)
+        }()
+
         let playlist = try await generator.generate(
             text: processed,
             metadata: metadata,
             existingVoiceBindings: existingBindings,
+            remoteCacheKey: remoteCacheKey,
             progressHandler: { progress in
                 Task { @MainActor in onProgressMessage(progress.message) }
             },

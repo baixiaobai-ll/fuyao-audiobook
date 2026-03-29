@@ -5,6 +5,7 @@ struct FuyaoApp: App {
     @StateObject private var store = BookshelfStore()
     @StateObject private var player = AudioBookPlayer()
     @StateObject private var profileStore = UserProfileStore()
+    @StateObject private var tabRouter = MainTabRouter()
     @State private var showSplash = true
 
     var body: some Scene {
@@ -14,6 +15,7 @@ struct FuyaoApp: App {
                     .environmentObject(store)
                     .environmentObject(player)
                     .environmentObject(profileStore)
+                    .environmentObject(tabRouter)
 
                 if showSplash {
                     SplashView()
