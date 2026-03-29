@@ -150,6 +150,32 @@ struct Config {
         return UserDefaults.standard.float(forKey: "playbackRate", defaultValue: 1.0)
     }
 
+
+    /// 自建发现页聚合 API 根地址（如 https://api.example.com），末尾无斜杠。未配置则只用笔趣阁直连。
+    static var discoverAPIBaseURL: String? {
+        if let e = ProcessInfo.processInfo.environment["DISCOVER_API_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !e.isEmpty {
+            return e
+        }
+        if let p = loadFromPlist(key: "DISCOVER_API_BASE_URL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            return p
+        }
+        return nil
+    }
+
+    /// 单章送入 TTS 分析的最大字数（过大增加耗时与费用）。
+    static var chapterTTSDisplayMaxChars: Int {
+        let v = UserDefaults.standard.integer(forKey: "chapterTTSDisplayMaxChars")
+        if v > 0 { return min(v, 50_000) }
+        return 2000
+    }
+
+    /// 是否在生成过程中边下边播首段（关闭则整章生成完再播放，更流畅）。
+    static var streamPlaybackWhileGenerating: Bool {
+        UserDefaults.standard.bool(forKey: "streamPlaybackWhileGenerating")
+    }
+
     // MARK: - Private Methods
 
     /// 从 Plist 文件读取配置

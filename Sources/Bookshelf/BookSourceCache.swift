@@ -7,8 +7,8 @@ final class BookSourceCache: Sendable {
         let timestamp: Date
     }
 
-    /// 30 minutes before data is considered stale (triggers background refresh)
-    private static let staleInterval: TimeInterval = 30 * 60
+    /// 20 minutes before data is considered stale (triggers background refresh)
+    private static let staleInterval: TimeInterval = 20 * 60
     /// 7 days before data is considered expired (deleted)
     private static let expiredInterval: TimeInterval = 7 * 24 * 60 * 60
 

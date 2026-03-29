@@ -42,7 +42,7 @@ enum BookChapterPlayback {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BookChapterPlaybackError.emptyContent
         }
-        let maxChars = 500
+        let maxChars = Config.chapterTTSDisplayMaxChars
         let processed = content.count > maxChars ? String(content.prefix(maxChars)) : content
 
         let generator = AudioBookGenerator(
@@ -77,6 +77,7 @@ enum BookChapterPlayback {
         }
         let startedInline = StartedFlag()
 
+        let stream = Config.streamPlaybackWhileGenerating
         let playlist = try await generator.generate(
             text: processed,
             metadata: metadata,
@@ -105,7 +106,8 @@ enum BookChapterPlayback {
                 Task { @MainActor in
                     store.updateVoiceBindings(bookId: shelfBook.id, bindings: newBindings)
                 }
-            }
+            },
+            streamItemsAsReady: stream
         )
 
         if !startedInline.value {

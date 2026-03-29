@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BookSearchView: View {
     @EnvironmentObject var store: BookshelfStore
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var keyword = ""
     @State private var categoryBooks: [BookSearchResult] = []
     @State private var searchResults: [BookSearchResult] = []
@@ -14,11 +16,7 @@ struct BookSearchView: View {
     private let cache = BookSourceCache()
 
     private var isSearching: Bool {
-        !keyword.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    private var displayBooks: [BookSearchResult] {
-        isSearching ? searchResults : categoryBooks
+        !keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -31,11 +29,11 @@ struct BookSearchView: View {
                 } else {
                     categoryTabs
 
-                    if isLoading {
+                    if isLoading && categoryBooks.isEmpty && rankingBooks.isEmpty {
                         Spacer()
                         ProgressView().padding()
                         Spacer()
-                    } else if let err = errorMessage {
+                    } else if let err = errorMessage, categoryBooks.isEmpty, rankingBooks.isEmpty {
                         Spacer()
                         Text(err).foregroundColor(.red).font(.footnote).padding()
                         Spacer()
@@ -48,18 +46,21 @@ struct BookSearchView: View {
                                 categoryListSection
                             }
                         }
+                        .refreshable {
+                            await refreshDiscoverPull()
+                        }
                     }
                 }
             }
             .navigationTitle("发现")
             .onAppear {
-                if categoryBooks.isEmpty {
-                    let first = BookSourceEngine.categoryPaths[0]
-                    loadCategory(first)
-                }
-                if rankingBooks.isEmpty {
-                    loadRanking()
-                }
+                loadRanking()
+                let first = BookSourceEngine.categoryPaths[0]
+                loadCategory(first)
+            }
+            .onReceive(Timer.publish(every: 20 * 60, on: .main, in: .common).autoconnect()) { _ in
+                guard scenePhase == .active, !isSearching else { return }
+                Task { await silentRefreshDiscover() }
             }
         }
     }
@@ -73,7 +74,7 @@ struct BookSearchView: View {
                 .submitLabel(.search)
                 .onSubmit { searchByKeyword() }
                 .onChange(of: keyword) { newValue in
-                    if newValue.trimmingCharacters(in: .whitespaces).isEmpty {
+                    if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         searchResults = []
                         errorMessage = nil
                     }
@@ -223,8 +224,6 @@ struct BookSearchView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: - Helpers
-
     private func bookDetailDestination(_ result: BookSearchResult) -> BookDetailView {
         BookDetailView(book: Book(
             title: result.title,
@@ -242,18 +241,24 @@ struct BookSearchView: View {
         let key = BookSourceCache.rankingKey
         if let cached = cache.retrieve(forKey: key) {
             rankingBooks = cached.books
-            if cached.isStale { refreshRanking() }
+            if cached.isStale {
+                Task { await refreshRankingFromNetwork() }
+            }
         } else {
-            refreshRanking()
+            Task { await refreshRankingFromNetwork() }
         }
     }
 
-    private func refreshRanking() {
-        Task {
-            guard let results = try? await engine.fetchRanking(), !results.isEmpty else { return }
-            cache.store(results, forKey: BookSourceCache.rankingKey)
-            rankingBooks = results
+    @MainActor
+    private func refreshRankingFromNetwork() async {
+        if let remote = await DiscoverAPIClient.fetchRanking(), !remote.isEmpty {
+            cache.store(remote, forKey: BookSourceCache.rankingKey)
+            rankingBooks = remote
+            return
         }
+        guard let results = try? await engine.fetchRanking(), !results.isEmpty else { return }
+        cache.store(results, forKey: BookSourceCache.rankingKey)
+        rankingBooks = results
     }
 
     private func loadCategory(_ cat: (name: String, sort: String)) {
@@ -264,27 +269,54 @@ struct BookSearchView: View {
         if let cached = cache.retrieve(forKey: key) {
             categoryBooks = cached.books
             isLoading = false
-            if cached.isStale { refreshCategory(cat) }
+            if cached.isStale {
+                Task { await refreshCategoryFromNetwork(cat) }
+            }
         } else {
             categoryBooks = []
             isLoading = true
-            refreshCategory(cat)
+            Task { await refreshCategoryFromNetwork(cat) }
         }
     }
 
-    private func refreshCategory(_ cat: (name: String, sort: String)) {
-        Task {
-            do {
-                let results = try await engine.fetchCategory(sort: cat.sort)
-                cache.store(results, forKey: BookSourceCache.categoryKey(cat.sort))
-                guard selectedCategory == cat.name else { return }
-                categoryBooks = results
-                if results.isEmpty { errorMessage = "暂无书籍" }
-            } catch {
-                guard selectedCategory == cat.name, categoryBooks.isEmpty else { return }
-                errorMessage = "加载失败: \(error.localizedDescription)"
+    @MainActor
+    private func refreshCategoryFromNetwork(_ cat: (name: String, sort: String)) async {
+        if let remote = await DiscoverAPIClient.fetchCategory(sort: cat.sort), !remote.isEmpty {
+            cache.store(remote, forKey: BookSourceCache.categoryKey(cat.sort))
+            if selectedCategory == cat.name {
+                categoryBooks = remote
+                errorMessage = remote.isEmpty ? "暂无书籍" : nil
             }
             if selectedCategory == cat.name { isLoading = false }
+            return
+        }
+        do {
+            let results = try await engine.fetchCategory(sort: cat.sort)
+            cache.store(results, forKey: BookSourceCache.categoryKey(cat.sort))
+            guard selectedCategory == cat.name else { return }
+            categoryBooks = results
+            errorMessage = results.isEmpty ? "暂无书籍" : nil
+        } catch {
+            guard selectedCategory == cat.name, categoryBooks.isEmpty else {
+                if selectedCategory == cat.name { isLoading = false }
+                return
+            }
+            errorMessage = "加载失败: \(error.localizedDescription)"
+        }
+        if selectedCategory == cat.name { isLoading = false }
+    }
+
+    private func refreshDiscoverPull() async {
+        await refreshRankingFromNetwork()
+        if let cat = BookSourceEngine.categoryPaths.first(where: { $0.name == selectedCategory }) {
+            await refreshCategoryFromNetwork(cat)
+        }
+    }
+
+    private func silentRefreshDiscover() async {
+        await refreshRankingFromNetwork()
+        if let cat = BookSourceEngine.categoryPaths.first(where: { $0.name == selectedCategory }) {
+            await refreshCategoryFromNetwork(cat)
         }
     }
 
@@ -300,17 +332,22 @@ struct BookSearchView: View {
                 let key = BookSourceCache.categoryKey(cat.sort)
                 if let cached = cache.retrieve(forKey: key), !cached.isStale {
                     all.append(contentsOf: cached.books)
+                } else if let remote = await DiscoverAPIClient.fetchCategory(sort: cat.sort), !remote.isEmpty {
+                    cache.store(remote, forKey: key)
+                    all.append(contentsOf: remote)
                 } else if let results = try? await engine.fetchCategory(sort: cat.sort) {
                     cache.store(results, forKey: key)
                     all.append(contentsOf: results)
                 }
             }
-            searchResults = all.filter {
-                $0.title.localizedCaseInsensitiveContains(kw) ||
-                $0.author.localizedCaseInsensitiveContains(kw)
+            await MainActor.run {
+                searchResults = all.filter {
+                    $0.title.localizedCaseInsensitiveContains(kw) ||
+                    $0.author.localizedCaseInsensitiveContains(kw)
+                }
+                if searchResults.isEmpty { errorMessage = "未找到\"\(kw)\"相关书籍" }
+                isLoading = false
             }
-            if searchResults.isEmpty { errorMessage = "未找到\"\(kw)\"相关书籍" }
-            isLoading = false
         }
     }
 }

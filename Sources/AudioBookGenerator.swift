@@ -94,7 +94,8 @@ public class AudioBookGenerator {
         existingVoiceBindings: [String: String] = [:],
         progressHandler: (@Sendable (GenerationProgress) -> Void)? = nil,
         onItemReady: (@Sendable (PlaybackItem) -> Void)? = nil,
-        onVoiceBindingsUpdated: (@Sendable ([String: String]) -> Void)? = nil
+        onVoiceBindingsUpdated: (@Sendable ([String: String]) -> Void)? = nil,
+        streamItemsAsReady: Bool = true
     ) async throws -> Playlist {
 
         print("🚀 开始生成有声书...")
@@ -169,7 +170,9 @@ public class AudioBookGenerator {
             )
 
             playbackItems.append(playbackItem)
-            onItemReady?(playbackItem)
+            if streamItemsAsReady {
+                onItemReady?(playbackItem)
+            }
 
             print("✅ 第 \(index + 1)/\(totalSegments) 段完成")
         }

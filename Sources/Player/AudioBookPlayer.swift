@@ -8,6 +8,7 @@
 import Foundation
 import AVFoundation
 import Combine
+import MediaPlayer
 
 /// 有声书播放器
 public class AudioBookPlayer: NSObject, ObservableObject {
@@ -28,6 +29,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let cacheManager: AudioCacheManager
     private let sessionManager: PlaybackSessionManager
+    private var lastNowPlayingInfoUpdate: TimeInterval = 0
 
     // MARK: - Initialization
 
@@ -58,6 +60,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
 
         print("📚 已加载播放列表: \(playlist.title), 共 \(playlist.items.count) 项")
+        ChapterPrefetchCoordinator.shared.resetForNewPlayback()
     }
 
     /// 追加播放项（流式播放时使用）
@@ -82,6 +85,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             player?.play()
             player?.rate = config.playbackRate
             state = .playing
+            publishNowPlayingInfoCenter()
             return
         }
 
@@ -101,6 +105,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             state = .playing
 
             print("▶️ 开始播放: \(currentItem.segment.text.prefix(20))...")
+            publishNowPlayingInfoCenter()
         } catch {
             state = .error
             print("❌ 播放失败: \(error.localizedDescription)")
@@ -112,6 +117,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         player?.pause()
         state = .paused
         saveSession()
+        publishNowPlayingInfoCenter()
         print("⏸️ 已暂停")
     }
 
@@ -121,6 +127,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         state = .stopped
         progress = PlaybackProgress()
         saveSession()
+        clearNowPlayingInfoCenter()
         print("⏹️ 已停止")
     }
 
@@ -350,6 +357,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 currentItemIndex: playlist.currentIndex,
                 totalItems: totalItems
             )
+            notifyPrefetchAndNowPlaying()
             return
         }
 
@@ -373,6 +381,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             currentItemIndex: playlist.currentIndex,
             totalItems: totalItems
         )
+        notifyPrefetchAndNowPlaying()
     }
 
     /// 处理播放完成
@@ -487,6 +496,43 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
         player?.pause()
         player = nil
+    }
+
+
+    private func notifyPrefetchAndNowPlaying() {
+        if state == .playing {
+            ChapterPrefetchCoordinator.shared.onPlaybackProgress(
+                currentTime: progress.currentTime,
+                duration: progress.duration,
+                playlist: currentPlaylist
+            )
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastNowPlayingInfoUpdate >= 1.5 {
+                lastNowPlayingInfoUpdate = now
+                publishNowPlayingInfoCenter()
+            }
+        }
+    }
+
+    private func publishNowPlayingInfoCenter() {
+        guard currentPlaylist != nil else { return }
+        var info = [String: Any]()
+        if let pl = currentPlaylist, let ctx = pl.chapterContext {
+            info[MPMediaItemPropertyTitle] = ctx.bookTitle
+            if let t = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title {
+                info[MPMediaItemPropertyArtist] = t
+            }
+        } else if let pl = currentPlaylist {
+            info[MPMediaItemPropertyTitle] = pl.title
+        }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = progress.currentTime
+        info[MPMediaItemPropertyPlaybackDuration] = max(progress.duration, 0)
+        info[MPNowPlayingInfoPropertyPlaybackRate] = (state == .playing) ? Double(config.playbackRate) : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func clearNowPlayingInfoCenter() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     /// 清理资源

@@ -27,6 +27,7 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: Foundation.framework
       - sdk: WebKit.framework
+      - sdk: MediaPlayer.framework
     info:
       path: App/Info.plist
       properties:
@@ -40,6 +41,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes:
+          - audio
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.fuyao.audiobook
       INFOPLIST_FILE: App/Info.plist
