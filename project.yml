@@ -28,10 +28,17 @@ targets:
       - sdk: Foundation.framework
       - sdk: WebKit.framework
       - sdk: MediaPlayer.framework
+      - target: 扶摇WidgetExtension
+        embed: true
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: 扶摇
+        CFBundleURLTypes:
+          - CFBundleURLName: com.fuyao.audiobook
+            CFBundleURLSchemes:
+              - fuyao
+        NSSupportsLiveActivities: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -51,3 +58,33 @@ targets:
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: ""
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    attributes:
+      SystemCapabilities:
+        com.apple.BackgroundModes:
+          enabled: 1
+
+  扶摇WidgetExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.1"
+    sources:
+      - path: Widgets
+      - path: Sources/LiveActivity
+    resources:
+      - path: App/Assets.xcassets
+      - path: Widgets/FuyaoWidgetAssets.xcassets
+    dependencies:
+      - sdk: SwiftUI.framework
+      - sdk: WidgetKit.framework
+      - sdk: ActivityKit.framework
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: 扶摇小组件
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.fuyao.audiobook.widget
+      INFOPLIST_FILE: Widgets/Info.plist
+      IPHONEOS_DEPLOYMENT_TARGET: "16.1"
+      SKIP_INSTALL: YES

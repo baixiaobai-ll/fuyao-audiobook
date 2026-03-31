@@ -71,19 +71,10 @@ public class AudioBookGenerator {
     public convenience init(
         aiApiKey: String,
         ttsApiKey: String,
-        aiProvider: AIProvider = .claude,
         ttsProvider: TTSProvider = .azure
     ) {
-        // 创建 AI 分析服务
-        let aiService: AIAnalysisService
-        switch aiProvider {
-        case .openai:
-            aiService = OpenAIAnalysisService(apiKey: aiApiKey)
-        case .claude:
-            aiService = ClaudeAnalysisService(apiKey: aiApiKey)
-        case .qwen:
-            aiService = QwenAnalysisService(apiKey: aiApiKey)
-        }
+        // 当前仅保留通义千问作为文本分析服务，避免 provider 配置漂移。
+        let aiService: AIAnalysisService = QwenAnalysisService(apiKey: aiApiKey)
 
         // 创建文本分析器
         let textAnalyzer = NovelTextAnalyzer(aiService: aiService)
@@ -419,8 +410,6 @@ struct GeneratorConfig {
 // MARK: - AI 提供商
 
 public enum AIProvider {
-    case openai
-    case claude
     case qwen
 }
 

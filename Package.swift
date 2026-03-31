@@ -14,10 +14,6 @@ let package = Package(
             name: "AIAudioBook",
             targets: ["AIAudioBook"]
         ),
-        .executable(
-            name: "AI有声书App",
-            targets: ["AI有声书App"]
-        ),
     ],
     dependencies: [
         // 如果需要可以添加第三方依赖
@@ -27,19 +23,7 @@ let package = Package(
         .target(
             name: "AIAudioBook",
             dependencies: [],
-            path: "Sources",
-            resources: [.process("Resources")]
-        ),
-        .executableTarget(
-            name: "AI有声书App",
-            dependencies: ["AIAudioBook"],
-            path: "App",
-            resources: [.process("../Config.plist")]
-        ),
-        .testTarget(
-            name: "AIAudioBookTests",
-            dependencies: ["AIAudioBook"],
-            path: "Tests"
+            path: "Sources"
         ),
     ]
 )

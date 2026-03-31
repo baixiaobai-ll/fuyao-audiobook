@@ -9,6 +9,9 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// 有声书播放器
 public class AudioBookPlayer: NSObject, ObservableObject {
@@ -61,6 +64,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         print("📚 已加载播放列表: \(playlist.title), 共 \(playlist.items.count) 项")
         ChapterPrefetchCoordinator.shared.resetForNewPlayback()
+        syncLiveActivity()
     }
 
     /// 追加播放项（流式播放时使用）
@@ -68,6 +72,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         currentPlaylist?.items.append(item)
         currentPlaylist?.totalDuration += item.audioData.duration
         print("➕ 追加播放项: 第 \(item.order + 1) 段")
+        syncLiveActivity()
     }
 
     /// 播放
@@ -78,6 +83,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             return
         }
 
+        ensureAudioSessionActive()
         state = .loading
 
         // 如果已有播放器且是同一项，直接播放
@@ -86,6 +92,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             player?.rate = config.playbackRate
             state = .playing
             publishNowPlayingInfoCenter()
+            syncLiveActivity()
             return
         }
 
@@ -106,9 +113,11 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
             print("▶️ 开始播放: \(currentItem.segment.text.prefix(20))...")
             publishNowPlayingInfoCenter()
+            syncLiveActivity()
         } catch {
             state = .error
             print("❌ 播放失败: \(error.localizedDescription)")
+            syncLiveActivity()
         }
     }
 
@@ -118,6 +127,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         state = .paused
         saveSession()
         publishNowPlayingInfoCenter()
+        syncLiveActivity()
         print("⏸️ 已暂停")
     }
 
@@ -128,6 +138,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         progress = PlaybackProgress()
         saveSession()
         clearNowPlayingInfoCenter()
+        syncLiveActivity()
         print("⏹️ 已停止")
     }
 
@@ -276,24 +287,28 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 设置音频会话
     private func setupAudioSession() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .spokenAudio)
-            try audioSession.setActive(true)
-
-            if config.enableBackgroundPlayback {
-                // 启用后台播放
-                try audioSession.setCategory(.playback, mode: .spokenAudio, options: [])
-            }
+            let options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+            try audioSession.setCategory(.playback, mode: .spokenAudio, options: options)
+            try audioSession.setActive(true, options: [])
+            #if canImport(UIKit)
+            UIApplication.shared.beginReceivingRemoteControlEvents()
+            #endif
 
             print("🔊 音频会话已配置")
         } catch {
             print("⚠️ 音频会话配置失败: \(error.localizedDescription)")
         }
+        #else
+        print("🔊 当前平台跳过 AVAudioSession 配置")
+        #endif
     }
 
     /// 设置通知
     private func setupNotifications() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption),
@@ -307,6 +322,34 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+        #endif
+    }
+
+    private func ensureAudioSessionActive() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            let options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+            try audioSession.setCategory(.playback, mode: .spokenAudio, options: options)
+            try audioSession.setActive(true, options: [])
+        } catch {
+            print("⚠️ 激活音频会话失败: \(error.localizedDescription)")
+        }
+        #endif
     }
 
     /// 设置时间观察器
@@ -358,6 +401,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 totalItems: totalItems
             )
             notifyPrefetchAndNowPlaying()
+            syncLiveActivity()
             return
         }
 
@@ -382,6 +426,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             totalItems: totalItems
         )
         notifyPrefetchAndNowPlaying()
+        syncLiveActivity()
     }
 
     /// 处理播放完成
@@ -424,6 +469,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 处理音频中断
     @objc private func handleInterruption(notification: Notification) {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
@@ -447,10 +493,12 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             }
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+        #endif
     }
 
     /// 处理音频路由变化
     @objc private func handleRouteChange(notification: Notification) {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         guard let userInfo = notification.userInfo,
               let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
@@ -463,13 +511,31 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             }
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+        #endif
+    }
+
+    @objc private func handleAppDidEnterBackground() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
+        if state == .playing {
+            ensureAudioSessionActive()
+            publishNowPlayingInfoCenter()
+        }
+        #endif
+    }
+
+    @objc private func handleAppWillEnterForeground() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
+        if state == .playing || state == .paused {
+            ensureAudioSessionActive()
+        }
+        #endif
     }
 
     /// 保存播放会话（始终保存当前 AVPlayer 分段内时间，便于恢复）
     private func saveSession() {
         guard let playlist = currentPlaylist else { return }
         let localTime: TimeInterval
-        if let p = player, let item = p.currentItem {
+        if let p = player, p.currentItem != nil {
             let t = CMTimeGetSeconds(p.currentTime())
             localTime = t.isFinite ? t : 0
         } else {
@@ -535,10 +601,72 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
+    private func syncLiveActivity() {
+        #if os(iOS) && canImport(ActivityKit)
+        guard #available(iOS 16.1, *),
+              let state = makeLiveActivityState() else {
+            if #available(iOS 16.1, *) {
+                Task { @MainActor in
+                    FuyaoLiveActivityManager.shared.end()
+                }
+            }
+            return
+        }
+        Task { @MainActor in
+            FuyaoLiveActivityManager.shared.sync(with: state)
+        }
+        #endif
+    }
+
+    #if os(iOS) && canImport(ActivityKit)
+    private func makeLiveActivityState() -> FuyaoPlaybackLiveState? {
+        guard #available(iOS 16.1, *),
+              let playlist = currentPlaylist else {
+            return nil
+        }
+
+        let bookTitle: String
+        let chapterTitle: String
+
+        if let ctx = playlist.chapterContext {
+            bookTitle = ctx.bookTitle
+            chapterTitle = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title
+                ?? playlist.title
+        } else {
+            bookTitle = playlist.title
+            chapterTitle = playlist.currentItem?.segment.speaker?.name ?? "当前播放"
+        }
+
+        if state == .stopped || state == .idle {
+            return nil
+        }
+
+        return FuyaoPlaybackLiveState(
+            playlistID: playlist.id.uuidString,
+            bookTitle: bookTitle,
+            chapterTitle: chapterTitle,
+            bookCoverURL: playlist.chapterContext?.bookCoverURL,
+            isPlaying: state == .playing,
+            elapsedTime: progress.currentTime,
+            duration: progress.duration
+        )
+    }
+    #endif
+
     /// 清理资源
     private func cleanup() {
         cleanupPlayer()
         sleepTimer?.invalidate()
+        #if os(iOS) && canImport(ActivityKit)
+        if #available(iOS 16.1, *) {
+            Task { @MainActor in
+                FuyaoLiveActivityManager.shared.end()
+            }
+        }
+        #endif
+        #if canImport(UIKit)
+        UIApplication.shared.endReceivingRemoteControlEvents()
+        #endif
         NotificationCenter.default.removeObserver(self)
     }
 

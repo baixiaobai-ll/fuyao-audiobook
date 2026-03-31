@@ -6,6 +6,7 @@ struct BookshelfView: View {
     @State private var showFileImporter = false
     @State private var importError: String? = nil
     @State private var selectedBook: Book? = nil
+    @State private var isEditingShelf = false
 
     private let columns = [GridItem(.adaptive(minimum: 140, maximum: 180))]
 
@@ -18,16 +19,7 @@ struct BookshelfView: View {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 20) {
                             ForEach(store.books) { book in
-                                NavigationLink(destination: BookDetailView(book: book)) {
-                                    BookCard(book: book)
-                                }
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        store.removeBook(id: book.id)
-                                    } label: {
-                                        Label("从书架移除", systemImage: "trash")
-                                    }
-                                }
+                                bookshelfCard(for: book)
                             }
                         }
                         .padding()
@@ -35,7 +27,24 @@ struct BookshelfView: View {
                 }
             }
             .navigationTitle("书架")
+            .navigationDestination(isPresented: Binding(
+                get: { selectedBook != nil },
+                set: { if !$0 { selectedBook = nil } }
+            )) {
+                if let book = selectedBook {
+                    BookDetailView(book: book)
+                }
+            }
             .toolbar {
+                if isEditingShelf {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("完成") {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                isEditingShelf = false
+                            }
+                        }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button(action: { showFileImporter = true }) {
@@ -63,6 +72,43 @@ struct BookshelfView: View {
                 Button("确定") { importError = nil }
             } message: {
                 Text(importError ?? "")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bookshelfCard(for book: Book) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Button {
+                guard !isEditingShelf else { return }
+                selectedBook = book
+            } label: {
+                BookCard(book: book, isEditing: isEditingShelf)
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        isEditingShelf = true
+                    }
+                }
+            )
+
+            if isEditingShelf {
+                Button(role: .destructive) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        store.removeBook(id: book.id)
+                        if store.books.count <= 1 {
+                            isEditingShelf = false
+                        }
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.red)
+                        .background(Color.white.clipShape(Circle()))
+                }
+                .offset(x: 8, y: -8)
             }
         }
     }
@@ -206,6 +252,8 @@ struct BookshelfView: View {
 
 struct BookCard: View {
     let book: Book
+    var isEditing: Bool = false
+    @State private var wiggle = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -226,5 +274,20 @@ struct BookCard: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
+        .rotationEffect(.degrees(isEditing ? (wiggle ? 1.8 : -1.8) : 0))
+        .animation(
+            isEditing
+                ? .easeInOut(duration: 0.14).repeatForever(autoreverses: true)
+                : .default,
+            value: wiggle
+        )
+        .onAppear {
+            if isEditing {
+                wiggle = true
+            }
+        }
+        .onChange(of: isEditing) { editing in
+            wiggle = editing
+        }
     }
 }

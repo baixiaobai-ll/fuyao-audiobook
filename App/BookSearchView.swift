@@ -11,6 +11,7 @@ struct BookSearchView: View {
     @State private var isLoading = false
     @State private var selectedCategory = BookSourceEngine.categoryPaths[0].name
     @State private var errorMessage: String? = nil
+    @State private var searchToken = UUID()
 
     private let engine = BookSourceEngine()
     private let cache = BookSourceCache()
@@ -323,31 +324,76 @@ struct BookSearchView: View {
     private func searchByKeyword() {
         let kw = keyword.trimmingCharacters(in: .whitespaces)
         guard !kw.isEmpty else { return }
+
+        let token = UUID()
+        searchToken = token
         isLoading = true
         errorMessage = nil
         searchResults = []
+
         Task {
-            var all: [BookSearchResult] = []
-            for cat in BookSourceEngine.categoryPaths {
-                let key = BookSourceCache.categoryKey(cat.sort)
-                if let cached = cache.retrieve(forKey: key), !cached.isStale {
-                    all.append(contentsOf: cached.books)
-                } else if let remote = await DiscoverAPIClient.fetchCategory(sort: cat.sort), !remote.isEmpty {
-                    cache.store(remote, forKey: key)
-                    all.append(contentsOf: remote)
-                } else if let results = try? await engine.fetchCategory(sort: cat.sort) {
-                    cache.store(results, forKey: key)
-                    all.append(contentsOf: results)
-                }
+            let results: [BookSearchResult]
+            let usedFallback: Bool
+
+            do {
+                results = try await engine.search(keyword: kw)
+                usedFallback = false
+            } catch {
+                results = await fallbackSearchResults(for: kw)
+                usedFallback = true
             }
+
             await MainActor.run {
-                searchResults = all.filter {
-                    $0.title.localizedCaseInsensitiveContains(kw) ||
-                    $0.author.localizedCaseInsensitiveContains(kw)
+                guard searchToken == token, keyword.trimmingCharacters(in: .whitespaces) == kw else { return }
+
+                searchResults = deduplicated(results)
+                if searchResults.isEmpty {
+                    errorMessage = usedFallback
+                        ? "未找到\"\(kw)\"相关书籍"
+                        : "没有搜索到\"\(kw)\"相关书籍"
+                } else if usedFallback {
+                    errorMessage = "当前已切换为本地缓存搜索，结果可能不完整"
                 }
-                if searchResults.isEmpty { errorMessage = "未找到\"\(kw)\"相关书籍" }
                 isLoading = false
             }
+        }
+    }
+
+    private func deduplicated(_ results: [BookSearchResult]) -> [BookSearchResult] {
+        var seen = Set<String>()
+        return results.filter { result in
+            let key = result.bookId.isEmpty
+                ? "\(result.title.lowercased())|\(result.author.lowercased())"
+                : result.bookId
+            return seen.insert(key).inserted
+        }
+    }
+
+    private func fallbackSearchResults(for keyword: String) async -> [BookSearchResult] {
+        var all: [BookSearchResult] = []
+
+        for cat in BookSourceEngine.categoryPaths {
+            let key = BookSourceCache.categoryKey(cat.sort)
+            if let cached = cache.retrieve(forKey: key), !cached.isStale {
+                all.append(contentsOf: cached.books)
+                continue
+            }
+
+            if let remote = await DiscoverAPIClient.fetchCategory(sort: cat.sort), !remote.isEmpty {
+                cache.store(remote, forKey: key)
+                all.append(contentsOf: remote)
+                continue
+            }
+
+            if let results = try? await engine.fetchCategory(sort: cat.sort) {
+                cache.store(results, forKey: key)
+                all.append(contentsOf: results)
+            }
+        }
+
+        return all.filter {
+            $0.title.localizedCaseInsensitiveContains(keyword) ||
+            $0.author.localizedCaseInsensitiveContains(keyword)
         }
     }
 }

@@ -9,9 +9,11 @@ import Foundation
 
 /// 音色管理器
 class VoiceManager {
+    static let narrationBindingKey = "__narration__"
 
     private var characterVoiceMap: [UUID: Voice] = [:]
     private var availableVoices: [Voice] = []
+    private var configuredNarrationVoice: Voice?
 
     init() {
         // 加载可用音色
@@ -59,9 +61,13 @@ class VoiceManager {
         return characterVoiceMap[character.id]
     }
 
-    /// 获取旁白音色（从当前可用音色中取第一个女声）
+    /// 获取旁白音色（优先使用配置的旁白，其次回退到默认旁白）
     func getNarrationVoice() -> Voice {
-        return availableVoices.first { $0.gender == .female } ?? availableVoices[0]
+        if let configuredNarrationVoice {
+            return configuredNarrationVoice
+        }
+        return VoiceLibrary.getPreferredNarrationVoice(for: availableVoices.first?.provider ?? .xfyun)
+            ?? availableVoices.first!
     }
 
     /// 清除所有音色分配
@@ -104,6 +110,7 @@ class VoiceManager {
         case .openai: availableVoices = VoiceLibrary.openAIVoices
         default:      availableVoices = VoiceLibrary.xfyunVoices
         }
+        configuredNarrationVoice = nil
     }
 
     // MARK: - Private Methods
@@ -150,8 +157,12 @@ class VoiceManager {
     ) -> (assignments: [Character: Voice], newBindings: [String: String]) {
         var assignments: [Character: Voice] = [:]
         var newBindings: [String: String] = [:]
-        // 旁白槽保留第一个女声，角色分配从剩余音色中选
-        let narrationVoiceId = availableVoices.first { $0.gender == .female }?.id
+        // 旁白槽支持手动绑定，角色分配从剩余音色中选
+        let narrationVoiceId = existingBindings[Self.narrationBindingKey]
+            ?? VoiceLibrary.getPreferredNarrationVoice(for: availableVoices.first?.provider ?? .xfyun)?.id
+        configuredNarrationVoice = narrationVoiceId.flatMap { id in
+            availableVoices.first(where: { $0.id == id })
+        }
         var usedVoices: Set<String> = narrationVoiceId.map { [$0] } ?? []
 
         for character in characters {

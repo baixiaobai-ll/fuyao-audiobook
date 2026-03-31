@@ -53,20 +53,7 @@ struct Config {
 
     /// AI 服务提供商
     static var aiProvider: AIProvider {
-        let providerString = ProcessInfo.processInfo.environment["AI_PROVIDER"]
-            ?? loadFromPlist(key: "AI_PROVIDER")
-            ?? "claude"
-
-        switch providerString.lowercased() {
-        case "openai":
-            return .openai
-        case "qwen":
-            return .qwen
-        case "claude":
-            return .claude
-        default:
-            return .claude
-        }
+        .qwen
     }
 
     /// TTS 服务提供商

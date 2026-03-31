@@ -1,5 +1,12 @@
 import SwiftUI
+
+#if canImport(UIKit)
 import UIKit
+typealias PlatformAvatarImage = UIImage
+#elseif canImport(AppKit)
+import AppKit
+typealias PlatformAvatarImage = NSImage
+#endif
 
 // MARK: - 预设卡通头像（与 Assets 中 avatar_preset_0 … 对应）
 
@@ -113,7 +120,7 @@ final class UserProfileStore: ObservableObject {
         save()
     }
 
-    func updateAvatar(image: UIImage) {
+    func updateAvatar(image: PlatformAvatarImage) {
         let fm = FileManager.default
         let dir = Self.avatarDirectory
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -122,7 +129,7 @@ final class UserProfileStore: ObservableObject {
         let fileURL = dir.appendingPathComponent(fileName)
 
         // 压缩并保存
-        if let data = image.jpegData(compressionQuality: 0.8) {
+        if let data = avatarJPEGData(from: image) {
             try? data.write(to: fileURL)
             avatarSource = .custom(fileName)
             save()
@@ -134,10 +141,16 @@ final class UserProfileStore: ObservableObject {
         save()
     }
 
-    func loadAvatarImage() -> UIImage? {
+    func loadAvatarImage() -> PlatformAvatarImage? {
         guard case .custom(let fileName) = avatarSource else { return nil }
         let fileURL = Self.avatarDirectory.appendingPathComponent(fileName)
+        #if canImport(UIKit)
         return UIImage(contentsOfFile: fileURL.path)
+        #elseif canImport(AppKit)
+        return NSImage(contentsOf: fileURL)
+        #else
+        return nil
+        #endif
     }
 
     // MARK: - Masked Phone
@@ -179,5 +192,19 @@ final class UserProfileStore: ObservableObject {
         case .custom:
             avatarSource = profile.avatarSource
         }
+    }
+
+    private func avatarJPEGData(from image: PlatformAvatarImage) -> Data? {
+        #if canImport(UIKit)
+        return image.jpegData(compressionQuality: 0.8)
+        #elseif canImport(AppKit)
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        #else
+        return nil
+        #endif
     }
 }

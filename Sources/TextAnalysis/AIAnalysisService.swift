@@ -12,71 +12,6 @@ protocol AIAnalysisService {
     func analyze(prompt: String) async throws -> String
 }
 
-/// OpenAI 分析服务
-class OpenAIAnalysisService: AIAnalysisService {
-
-    private let apiKey: String
-    private let model: String
-    private let baseURL: String
-
-    init(apiKey: String, model: String = "gpt-4-turbo-preview", baseURL: String = "https://api.openai.com/v1") {
-        self.apiKey = apiKey
-        self.model = model
-        self.baseURL = baseURL
-    }
-
-    func analyze(prompt: String) async throws -> String {
-        let url = URL(string: "\(baseURL)/chat/completions")!
-        var request = URLRequest(url: url, timeoutInterval: 120)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": "你是一个专业的小说文本分析助手，擅长识别对话、角色、情感和场景。"],
-                ["role": "user", "content": prompt]
-            ],
-            "temperature": 0.3,
-            "response_format": ["type": "json_object"]
-        ]
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AnalysisError.networkError
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw AnalysisError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
-        }
-
-        let result = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-
-        guard let content = result.choices.first?.message.content else {
-            throw AnalysisError.invalidResponse
-        }
-
-        return content
-    }
-
-    private struct OpenAIResponse: Codable {
-        let choices: [Choice]
-
-        struct Choice: Codable {
-            let message: Message
-        }
-
-        struct Message: Codable {
-            let content: String
-        }
-    }
-}
-
 /// 通义千问分析服务
 class QwenAnalysisService: AIAnalysisService {
 
@@ -114,7 +49,19 @@ class QwenAnalysisService: AIAnalysisService {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = bodyData
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch let urlError as URLError {
+                if urlError.code == .timedOut {
+                    throw AnalysisError.apiError("通义千问分析超时，请检查网络后重试")
+                }
+                throw AnalysisError.apiError("通义千问网络请求失败：\(urlError.localizedDescription)")
+            } catch {
+                throw AnalysisError.apiError("通义千问请求失败：\(error.localizedDescription)")
+            }
+
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw AnalysisError.networkError
             }
@@ -125,6 +72,14 @@ class QwenAnalysisService: AIAnalysisService {
                 }
                 return content
             }
+
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw AnalysisError.apiError("通义千问鉴权失败，请检查 AI_API_KEY 是否正确，并确认 AI_PROVIDER=qwen")
+            }
+            if httpResponse.statusCode == 429 {
+                throw AnalysisError.apiError("通义千问请求过于频繁，请稍后重试")
+            }
+
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             lastError = AnalysisError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
             let retryable = [502, 503, 504].contains(httpResponse.statusCode)
@@ -143,76 +98,6 @@ class QwenAnalysisService: AIAnalysisService {
 
         struct Message: Codable {
             let content: String
-        }
-    }
-}
-
-/// Claude 分析服务
-class ClaudeAnalysisService: AIAnalysisService {
-
-    private let apiKey: String
-    private let model: String
-    private let baseURL: String
-
-    init(apiKey: String, model: String = "claude-opus-4-6", baseURL: String = "https://api.anthropic.com/v1") {
-        self.apiKey = apiKey
-        self.model = model
-        self.baseURL = baseURL
-    }
-
-    func analyze(prompt: String) async throws -> String {
-        let url = URL(string: "\(baseURL)/messages")!
-        var request = URLRequest(url: url, timeoutInterval: 120)
-        request.httpMethod = "POST"
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 4096,
-            "messages": [
-                [
-                    "role": "user",
-                    "content": """
-                    你是一个专业的小说文本分析助手，擅长识别对话、角色、情感和场景。
-
-                    \(prompt)
-
-                    请严格按照 JSON 格式返回结果。
-                    """
-                ]
-            ],
-            "temperature": 0.3
-        ]
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AnalysisError.networkError
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw AnalysisError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
-        }
-
-        let result = try JSONDecoder().decode(ClaudeResponse.self, from: data)
-
-        guard let content = result.content.first?.text else {
-            throw AnalysisError.invalidResponse
-        }
-
-        return content
-    }
-
-    private struct ClaudeResponse: Codable {
-        let content: [Content]
-
-        struct Content: Codable {
-            let text: String
         }
     }
 }

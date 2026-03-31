@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Book: Codable, Identifiable, Sendable {
+public struct Book: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var title: String
     public var author: String
@@ -54,7 +54,7 @@ public struct Book: Codable, Identifiable, Sendable {
     }
 }
 
-public struct Chapter: Codable, Identifiable, Sendable {
+public struct Chapter: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var title: String
     public var url: String?
@@ -76,7 +76,7 @@ public struct Chapter: Codable, Identifiable, Sendable {
     }
 }
 
-public enum BookSource: String, Codable, Sendable {
+public enum BookSource: String, Codable, Hashable, Sendable {
     case local
     case biquge
 }

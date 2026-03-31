@@ -18,7 +18,6 @@ class UsageExample {
         let generator = AudioBookGenerator(
             aiApiKey: "your-ai-api-key",
             ttsApiKey: "your-tts-api-key",
-            aiProvider: .claude,
             ttsProvider: .azure
         )
 
@@ -86,9 +85,8 @@ class UsageExample {
     /// 示例 3: 自定义配置
     func example3_CustomConfiguration() async throws {
         // 创建自定义 AI 服务
-        let aiService = ClaudeAnalysisService(
-            apiKey: "your-claude-api-key",
-            model: "claude-opus-4-6"
+        let aiService = QwenAnalysisService(
+            apiKey: "your-qwen-api-key"
         )
 
         let textAnalyzer = NovelTextAnalyzer(aiService: aiService)
@@ -146,7 +144,7 @@ class UsageExample {
     /// 示例 4: 手动控制每个步骤
     func example4_ManualControl() async throws {
         // 1. 文本分析
-        let aiService = ClaudeAnalysisService(apiKey: "your-api-key")
+        let aiService = QwenAnalysisService(apiKey: "your-api-key")
         let textAnalyzer = NovelTextAnalyzer(aiService: aiService)
 
         let text = "小说内容..."
@@ -294,7 +292,8 @@ class UsageExample {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 
         for (index, item) in playlist.items.enumerated() {
-            let fileName = String(format: "%03d_%@.%@", index + 1, item.segment.text.prefix(10), item.audioData.format.rawValue)
+            let segmentPrefix = String(item.segment.text.prefix(10))
+            let fileName = String(format: "%03d_%@.%@", index + 1, segmentPrefix, item.audioData.format.rawValue)
             let fileURL = outputDirectory.appendingPathComponent(fileName)
 
             try item.audioData.data.write(to: fileURL)
@@ -313,9 +312,8 @@ func quickStart() async throws {
 
     // 1. 创建生成器（需要替换为真实的 API Key）
     let generator = AudioBookGenerator(
-        aiApiKey: "your-claude-api-key",
+        aiApiKey: "your-qwen-api-key",
         ttsApiKey: "your-azure-tts-key",
-        aiProvider: .claude,
         ttsProvider: .azure
     )
 

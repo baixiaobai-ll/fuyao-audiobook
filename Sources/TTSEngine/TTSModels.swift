@@ -170,14 +170,34 @@ struct VoiceLibrary {
     static let xfyunVoices: [Voice] = [
         Voice(id: "x6_lingxiaoxuan_pro", name: "聆小璇", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、温柔、标准"),
         Voice(id: "x6_lingfeiyi_pro", name: "聆飞逸", gender: .male, provider: .xfyun, sampleRate: 24000, description: "男性、沉稳"),
+        Voice(id: "x5_lingyuzhao_flow", name: "灵玉昭", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、流式、知性"),
+        Voice(id: "x6_lingxiaoyue_pro", name: "聆小玥", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、清亮、年轻"),
         Voice(id: "x6_lingyuyan_pro", name: "聆玉言", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、知性"),
-        Voice(id: "x6_lingfeiyue_pro", name: "聆飞月", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、甜美"),
-        Voice(id: "x6_lingyuyan_omni", name: "聆玉言Omni", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、全能")
+        Voice(id: "x6_dudulibao_pro", name: "嘟嘟栗宝", gender: .child, provider: .xfyun, sampleRate: 24000, description: "儿童、活泼、轻快"),
+        Voice(id: "x5_lingxiaotang_flow", name: "灵小棠", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、流式、轻盈"),
+        Voice(id: "x6_wumeinv_pro", name: "妩媚女", gender: .female, provider: .xfyun, sampleRate: 24000, description: "女性、妩媚、角色感"),
+        Voice(id: "x6_feizheChat_pro", name: "聆飞哲", gender: .male, provider: .xfyun, sampleRate: 24000, description: "男性、聊天感、轻松"),
+        Voice(id: "x6_lingfeibo_pro", name: "聆飞博", gender: .male, provider: .xfyun, sampleRate: 24000, description: "男性、新闻播报"),
+        Voice(id: "x6_huajidama_pro", name: "滑稽大妈", gender: .elder, provider: .xfyun, sampleRate: 24000, description: "长者、夸张、角色感"),
+        Voice(id: "x6_ruyadashu_pro", name: "儒雅大叔", gender: .male, provider: .xfyun, sampleRate: 24000, description: "男性、成熟、故事感")
     ]
 
     /// 获取所有音色
     static func getAllVoices() -> [Voice] {
         return openAIVoices + azureVoices + xfyunVoices
+    }
+
+    static func getVoices(for provider: TTSProvider) -> [Voice] {
+        switch provider {
+        case .openai:
+            return openAIVoices
+        case .azure:
+            return azureVoices
+        case .xfyun:
+            return xfyunVoices
+        default:
+            return []
+        }
     }
 
     /// 根据性别筛选音色
@@ -232,6 +252,30 @@ struct VoiceLibrary {
             }
         default:
             return nil
+        }
+    }
+
+    static func getPreferredNarrationVoice(for provider: TTSProvider = .xfyun) -> Voice? {
+        switch provider {
+        case .xfyun:
+            return xfyunVoices.first { $0.id == "x6_lingfeiyi_pro" } ?? xfyunVoices.first
+        case .azure:
+            return azureVoices.first { $0.id == "zh-CN-YunxiNeural" } ?? azureVoices.first
+        case .openai:
+            return openAIVoices.first { $0.id == "echo" } ?? openAIVoices.first
+        default:
+            return nil
+        }
+    }
+
+    static func compatibleXfyunSuperVoiceId(for voiceId: String) -> String {
+        switch voiceId {
+        case "x5_lingyuzhao_flow":
+            return "x6_lingyuyan_pro"
+        case "x5_lingxiaotang_flow":
+            return "x6_lingxiaoyue_pro"
+        default:
+            return voiceId
         }
     }
 }

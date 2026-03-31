@@ -42,13 +42,14 @@ enum BookChapterPlayback {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BookChapterPlaybackError.emptyContent
         }
-        let maxChars = Config.chapterTTSDisplayMaxChars
-        let processed = content.count > maxChars ? String(content.prefix(maxChars)) : content
+        let playbackChunks = splitContentForPlayback(
+            content,
+            maxChars: Config.chapterTTSDisplayMaxChars
+        )
 
         let generator = AudioBookGenerator(
             aiApiKey: Config.aiApiKey,
             ttsApiKey: Config.ttsApiKey,
-            aiProvider: Config.aiProvider,
             ttsProvider: Config.ttsProvider
         )
         let existingBindings = store.books.first(where: { $0.id == shelfBook.id })?.voiceBindings ?? [:]
@@ -70,7 +71,7 @@ enum BookChapterPlayback {
             title: shelfBook.title,
             author: shelfBook.author,
             chapterTitle: chapter.title,
-            wordCount: processed.count
+            wordCount: content.count
         )
 
         final class StartedFlag {
@@ -78,53 +79,170 @@ enum BookChapterPlayback {
         }
         let startedInline = StartedFlag()
 
+        final class StartupBufferState {
+            var items: [PlaybackItem] = []
+
+            var bufferedDuration: TimeInterval {
+                items.reduce(0) { $0 + $1.audioData.duration }
+            }
+        }
+        let startupBuffer = StartupBufferState()
+
+        final class VoiceBindingState {
+            var bindings: [String: String]
+
+            init(bindings: [String: String]) {
+                self.bindings = bindings
+            }
+        }
+        let bindingState = VoiceBindingState(bindings: existingBindings)
+
         let stream = Config.streamPlaybackWhileGenerating
         let remoteCacheKey: PlaybackRemoteCacheKey? = {
             guard shelfBook.source == .biquge, let bid = shelfBook.bookId, !bid.isEmpty else { return nil }
             return PlaybackRemoteCacheKey(bookId: bid, chapterIndex: chapter.index)
         }()
 
-        let playlist = try await generator.generate(
-            text: processed,
-            metadata: metadata,
-            existingVoiceBindings: existingBindings,
-            remoteCacheKey: remoteCacheKey,
-            progressHandler: { progress in
-                Task { @MainActor in onProgressMessage(progress.message) }
-            },
-            onItemReady: { item in
-                Task { @MainActor in
-                    if item.order == 0 {
-                        player.load(playlist: Playlist(
-                            title: chapter.title,
-                            items: [item],
-                            currentIndex: 0,
-                            chapterContext: ctx
-                        ))
-                        player.play()
-                        startedInline.value = true
-                        onFirstPlaybackStarted()
-                    } else {
-                        player.append(item: item)
+        var combinedItems: [PlaybackItem] = []
+
+        for (chunkIndex, chunkText) in playbackChunks.enumerated() {
+            let chunkNumber = chunkIndex + 1
+            let chunkCount = playbackChunks.count
+            let isFirstChunk = chunkIndex == 0
+
+            let playlist = try await generator.generate(
+                text: chunkText,
+                metadata: metadata,
+                existingVoiceBindings: bindingState.bindings,
+                remoteCacheKey: remoteCacheKey.map {
+                    PlaybackRemoteCacheKey(bookId: $0.bookId, chapterIndex: chapter.index * 1000 + chunkIndex)
+                },
+                progressHandler: { progress in
+                    let message = chunkCount > 1
+                        ? "第 \(chunkNumber)/\(chunkCount) 段：\(progress.message)"
+                        : progress.message
+                    Task { @MainActor in onProgressMessage(message) }
+                },
+                onItemReady: { item in
+                    Task { @MainActor in
+                        if !stream { return }
+                        if isFirstChunk && !startedInline.value {
+                            startupBuffer.items.append(item)
+                            startupBuffer.items.sort { $0.order < $1.order }
+
+                            let shouldStart = startupBuffer.items.count >= 3
+                                || startupBuffer.bufferedDuration >= 20
+                            guard shouldStart else { return }
+
+                            player.load(playlist: Playlist(
+                                title: chapter.title,
+                                items: startupBuffer.items,
+                                currentIndex: 0,
+                                chapterContext: ctx
+                            ))
+                            player.play()
+                            startedInline.value = true
+                            onFirstPlaybackStarted()
+                        } else {
+                            player.append(item: item)
+                        }
                     }
-                }
-            },
-            onVoiceBindingsUpdated: { newBindings in
-                Task { @MainActor in
-                    store.updateVoiceBindings(bookId: shelfBook.id, bindings: newBindings)
-                }
-            },
-            streamItemsAsReady: stream
-        )
+                },
+                onVoiceBindingsUpdated: { newBindings in
+                    Task { @MainActor in
+                        bindingState.bindings.merge(newBindings) { _, new in new }
+                        store.updateVoiceBindings(bookId: shelfBook.id, bindings: newBindings)
+                    }
+                },
+                streamItemsAsReady: stream
+            )
+
+            combinedItems.append(contentsOf: playlist.items)
+
+            if isFirstChunk && stream && !startedInline.value && !startupBuffer.items.isEmpty {
+                let startupItems = startupBuffer.items.sorted { $0.order < $1.order }
+                player.load(playlist: Playlist(
+                    title: chapter.title,
+                    items: startupItems,
+                    currentIndex: 0,
+                    chapterContext: ctx
+                ))
+                player.play()
+                startedInline.value = true
+                onFirstPlaybackStarted()
+            }
+        }
 
         if !startedInline.value {
-            var final = playlist
-            final.chapterContext = ctx
-            final.title = chapter.title
+            let final = Playlist(
+                title: chapter.title,
+                items: combinedItems,
+                currentIndex: 0,
+                chapterContext: ctx
+            )
             player.load(playlist: final)
             player.play()
             onFirstPlaybackStarted()
         }
+
         store.updateLastRead(bookId: shelfBook.id, chapterIndex: chapter.index)
+    }
+
+    private static func splitContentForPlayback(_ content: String, maxChars: Int) -> [String] {
+        let normalized = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > maxChars, maxChars > 0 else { return [normalized] }
+
+        let paragraphs = normalized
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !paragraphs.isEmpty else {
+            return strideChunks(of: normalized, maxChars: maxChars)
+        }
+
+        var chunks: [String] = []
+        var current = ""
+
+        for paragraph in paragraphs {
+            let candidate = current.isEmpty ? paragraph : "\(current)\n\n\(paragraph)"
+            if candidate.count <= maxChars {
+                current = candidate
+                continue
+            }
+
+            if !current.isEmpty {
+                chunks.append(current)
+                current = ""
+            }
+
+            if paragraph.count <= maxChars {
+                current = paragraph
+            } else {
+                chunks.append(contentsOf: strideChunks(of: paragraph, maxChars: maxChars))
+            }
+        }
+
+        if !current.isEmpty {
+            chunks.append(current)
+        }
+
+        return chunks.isEmpty ? [normalized] : chunks
+    }
+
+    private static func strideChunks(of text: String, maxChars: Int) -> [String] {
+        let chars = Array(text)
+        guard !chars.isEmpty else { return [] }
+
+        var chunks: [String] = []
+        var start = 0
+
+        while start < chars.count {
+            let end = min(start + maxChars, chars.count)
+            chunks.append(String(chars[start..<end]))
+            start = end
+        }
+
+        return chunks
     }
 }

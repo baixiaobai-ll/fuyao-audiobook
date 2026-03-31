@@ -337,11 +337,10 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         let urlString = "wss://\(host)\(path)?authorization=\(authEncoded)&date=\(dateEncoded)&host=\(host)"
         guard let url = URL(string: urlString) else { throw TTSError.invalidConfiguration }
 
-        let vcn: String
-        if voice.provider == .xfyun && !voice.id.isEmpty {
-            vcn = voice.id
-        } else {
-            vcn = "x6_lingxiaoxuan_pro"
+        let originalVoiceId = (voice.provider == .xfyun && !voice.id.isEmpty) ? voice.id : "x6_lingxiaoxuan_pro"
+        let vcn = VoiceLibrary.compatibleXfyunSuperVoiceId(for: originalVoiceId)
+        if vcn != originalVoiceId {
+            NSLog("⚠️ 发音人 %@ 与当前超拟人接口不兼容，自动回退到 %@", originalVoiceId, vcn)
         }
         NSLog("🎙️ 超拟人使用声音: %@, voice.id=%@, voice.provider=%@", vcn, voice.id, voice.provider.rawValue)
         let textBase64 = text.data(using: .utf8)!.base64EncodedString()
@@ -433,7 +432,8 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                             let errMsg = (json["header"] as? [String: Any])?["message"] as? String ?? "Unknown"
                             NSLog("🚨 讯飞超拟人错误 code=%d message=%@", code, errMsg)
                             task.cancel()
-                            resumeOnce(with: .failure(TTSError.apiError("讯飞超拟人错误 \(code): \(errMsg)")))
+                            let friendly = "讯飞发音失败（\(vcn)）：\(errMsg) [code \(code)]"
+                            resumeOnce(with: .failure(TTSError.apiError(friendly)))
                             return
                         }
                         if let payload = json["payload"] as? [String: Any],

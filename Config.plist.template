@@ -7,9 +7,9 @@
     <!-- ==================== -->
 
     <!-- AI 分析服务 API 密钥 -->
-    <!-- 获取方式: https://console.anthropic.com/ 或 https://platform.openai.com/ -->
+    <!-- 获取方式: 阿里云 DashScope / 通义千问控制台 -->
     <key>AI_API_KEY</key>
-    <string>your-claude-api-key-here</string>
+    <string>your-qwen-api-key-here</string>
 
     <!-- TTS 服务 API 密钥 -->
     <!-- Azure: https://portal.azure.com/ (创建语音服务资源) -->
@@ -21,9 +21,9 @@
     <!-- 服务提供商配置 -->
     <!-- ==================== -->
 
-    <!-- AI 服务提供商: claude 或 openai -->
+    <!-- AI 服务提供商: 固定为 qwen -->
     <key>AI_PROVIDER</key>
-    <string>claude</string>
+    <string>qwen</string>
 
     <!-- TTS 服务提供商: azure, xfyun, openai -->
     <key>TTS_PROVIDER</key>
@@ -38,12 +38,6 @@
     <!-- 可选配置 -->
     <!-- ==================== -->
 
-    <!-- OpenAI API Base URL (可选，使用默认值可不填) -->
-    <key>OPENAI_BASE_URL</key>
-    <string>https://api.openai.com/v1</string>
-
-    <!-- Claude API Base URL (可选，使用默认值可不填) -->
-    <key>CLAUDE_BASE_URL</key>
-    <string>https://api.anthropic.com/v1</string>
+    <!-- 文本分析当前固定走通义千问，无需额外 Base URL 配置 -->
 </dict>
 </plist>

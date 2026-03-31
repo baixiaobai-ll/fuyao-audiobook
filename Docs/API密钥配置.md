@@ -8,52 +8,25 @@
 
 ## 1. AI 分析服务
 
-### Claude API（推荐）
+### 通义千问（当前唯一支持）
 
 **获取方式：**
-1. 访问 [Anthropic Console](https://console.anthropic.com/)
-2. 注册账号并登录
-3. 进入 API Keys 页面
-4. 创建新的 API Key
+1. 访问阿里云 DashScope / 通义千问控制台
+2. 开通模型服务
+3. 创建 API Key
 
 **配置示例：**
 ```swift
 let generator = AudioBookGenerator(
-    aiApiKey: "sk-ant-api03-xxxxx",
+    aiApiKey: "your-qwen-api-key",
     ttsApiKey: "your-tts-key",
-    aiProvider: .claude,
     ttsProvider: .azure
 )
 ```
 
-**定价：**
-- Claude Opus 4.6: $15/MTok (输入), $75/MTok (输出)
-- Claude Sonnet 4.6: $3/MTok (输入), $15/MTok (输出)
-
-**预估成本：**
-- 分析 1 万字小说约消耗 15K tokens
-- 使用 Sonnet: 约 $0.05-0.10
-
-### OpenAI API（备选）
-
-**获取方式：**
-1. 访问 [OpenAI Platform](https://platform.openai.com/)
-2. 注册账号并登录
-3. 进入 API Keys 页面
-4. 创建新的 API Key
-
-**配置示例：**
-```swift
-let generator = AudioBookGenerator(
-    aiApiKey: "sk-xxxxx",
-    ttsApiKey: "your-tts-key",
-    aiProvider: .openai,
-    ttsProvider: .azure
-)
-```
-
-**定价：**
-- GPT-4 Turbo: $10/MTok (输入), $30/MTok (输出)
+说明：
+- 当前项目文本分析链路固定为 `Qwen`
+- 不再保留 `Claude / OpenAI` 文本分析 provider 切换入口
 
 ## 2. TTS 服务
 
@@ -146,11 +119,11 @@ let ttsConfig = TTSConfig(
 <plist version="1.0">
 <dict>
     <key>AI_API_KEY</key>
-    <string>your-claude-api-key</string>
+    <string>your-qwen-api-key</string>
     <key>TTS_API_KEY</key>
     <string>your-azure-tts-key</string>
     <key>AI_PROVIDER</key>
-    <string>claude</string>
+    <string>qwen</string>
     <key>TTS_PROVIDER</key>
     <string>azure</string>
     <key>AZURE_REGION</key>
@@ -162,7 +135,7 @@ let ttsConfig = TTSConfig(
 ### 读取配置
 
 ```swift
-func loadConfig() -> (aiKey: String, ttsKey: String, aiProvider: AIProvider, ttsProvider: TTSProvider) {
+func loadConfig() -> (aiKey: String, ttsKey: String, ttsProvider: TTSProvider) {
     guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
           let config = NSDictionary(contentsOfFile: path) else {
         fatalError("配置文件不存在")
@@ -170,13 +143,11 @@ func loadConfig() -> (aiKey: String, ttsKey: String, aiProvider: AIProvider, tts
 
     let aiKey = config["AI_API_KEY"] as! String
     let ttsKey = config["TTS_API_KEY"] as! String
-    let aiProviderString = config["AI_PROVIDER"] as! String
     let ttsProviderString = config["TTS_PROVIDER"] as! String
 
-    let aiProvider: AIProvider = aiProviderString == "openai" ? .openai : .claude
     let ttsProvider = TTSProvider(rawValue: ttsProviderString) ?? .azure
 
-    return (aiKey, ttsKey, aiProvider, ttsProvider)
+    return (aiKey, ttsKey, ttsProvider)
 }
 
 // 使用
@@ -184,7 +155,6 @@ let config = loadConfig()
 let generator = AudioBookGenerator(
     aiApiKey: config.aiKey,
     ttsApiKey: config.ttsKey,
-    aiProvider: config.aiProvider,
     ttsProvider: config.ttsProvider
 )
 ```
