@@ -98,6 +98,14 @@ enum BookChapterPlayback {
         let bindingState = VoiceBindingState(bindings: existingBindings)
 
         let stream = Config.streamPlaybackWhileGenerating
+        if stream {
+            player.beginStreamingPlayback()
+        }
+        defer {
+            if stream {
+                player.finishStreamingPlayback()
+            }
+        }
         let remoteCacheKey: PlaybackRemoteCacheKey? = {
             guard shelfBook.source == .biquge, let bid = shelfBook.bookId, !bid.isEmpty else { return nil }
             return PlaybackRemoteCacheKey(bookId: bid, chapterIndex: chapter.index)

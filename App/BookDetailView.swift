@@ -280,6 +280,9 @@ struct BookDetailView: View {
                 isGenerating = false
                 generatingChapterIndex = nil
             } catch {
+                print("❌ 章节生成失败: \(error)")
+                let rawMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                print("❌ 章节生成失败详情: \(rawMessage)")
                 errorMessage = friendlyGenerationErrorMessage(error)
                 isGenerating = false
                 generatingChapterIndex = nil
@@ -303,7 +306,10 @@ struct BookDetailView: View {
             return "语音合成失败。\(message.replacingOccurrences(of: "TTS API 错误: ", with: ""))"
         }
         if message.contains("TTS API 错误") {
-            return "语音合成失败。请检查讯飞发音人配置或稍后重试。"
+            return "语音合成失败。\(message.replacingOccurrences(of: "TTS API 错误: ", with: ""))"
+        }
+        if message.localizedCaseInsensitiveContains("timeout") || message.contains("超时") {
+            return "语音合成失败。请求超时，请检查当前网络后重试。"
         }
         if message.contains("网络") {
             return "网络请求失败，请检查当前网络后重试。"
@@ -373,7 +379,7 @@ struct BookDetailView: View {
     private func voicePickerRow(title: String, bindingKey: String, helper: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-            Picker(title, selection: Binding(
+            Picker("", selection: Binding(
                 get: {
                     editableVoiceBindings[bindingKey] ?? availableVoices.first?.id ?? ""
                 },
@@ -384,6 +390,7 @@ struct BookDetailView: View {
                 }
             }
             .pickerStyle(.menu)
+            .labelsHidden()
 
             Text(helper)
                 .font(.caption)

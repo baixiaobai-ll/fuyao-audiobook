@@ -2,6 +2,9 @@
 import ActivityKit
 import SwiftUI
 import WidgetKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @available(iOSApplicationExtension 16.1, *)
 struct FuyaoLiveActivityWidget: Widget {
@@ -117,14 +120,25 @@ struct FuyaoLiveActivityWidget: Widget {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
                 .fill(Color.white.opacity(0.08))
-            Image("fuyao_live_icon")
-                .renderingMode(.original)
+            bundledBrandIcon()
                 .resizable()
                 .scaledToFit()
                 .padding(size * 0.06)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+    }
+
+    private func bundledBrandIcon() -> Image {
+        #if canImport(UIKit)
+        if let image = UIImage(named: "fuyao_mark", in: .main, with: nil) {
+            return Image(uiImage: image).renderingMode(.original)
+        }
+        if let image = UIImage(named: "mascot", in: .main, with: nil) {
+            return Image(uiImage: image).renderingMode(.original)
+        }
+        #endif
+        return Image(systemName: "book.closed.fill")
     }
 
     @ViewBuilder

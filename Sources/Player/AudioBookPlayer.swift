@@ -33,6 +33,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private let cacheManager: AudioCacheManager
     private let sessionManager: PlaybackSessionManager
     private var lastNowPlayingInfoUpdate: TimeInterval = 0
+    private var isStreamingPlaybackPending = false
 
     // MARK: - Initialization
 
@@ -72,7 +73,33 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         currentPlaylist?.items.append(item)
         currentPlaylist?.totalDuration += item.audioData.duration
         print("➕ 追加播放项: 第 \(item.order + 1) 段")
+
+        if isStreamingPlaybackPending,
+           state == .loading,
+           player == nil,
+           let playlist = currentPlaylist,
+           playlist.hasNext {
+            next()
+            return
+        }
+
         syncLiveActivity()
+    }
+
+    public func beginStreamingPlayback() {
+        isStreamingPlaybackPending = true
+    }
+
+    public func finishStreamingPlayback() {
+        isStreamingPlaybackPending = false
+
+        if state == .loading, player == nil {
+            if let playlist = currentPlaylist, playlist.hasNext {
+                next()
+            } else {
+                handlePlaylistEnded()
+            }
+        }
     }
 
     /// 播放
@@ -336,6 +363,13 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             name: UIApplication.willEnterForegroundNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillTerminate),
+            name: UIApplication.willTerminateNotification,
+            object: nil
+        )
         #endif
     }
 
@@ -439,7 +473,17 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 self.seek(to: 0)
                 self.play()
             } else if self.config.enableAutoNext {
-                self.next()
+                if let playlist = self.currentPlaylist, playlist.hasNext {
+                    self.next()
+                } else if self.isStreamingPlaybackPending {
+                    self.cleanupPlayer()
+                    self.state = .loading
+                    self.publishNowPlayingInfoCenter()
+                    self.syncLiveActivity()
+                    print("⏳ 已播到当前缓冲末尾，等待后续音频生成...")
+                } else {
+                    self.handlePlaylistEnded()
+                }
             } else {
                 self.pause()
             }
@@ -527,6 +571,16 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         #if os(iOS) || os(tvOS) || os(watchOS)
         if state == .playing || state == .paused {
             ensureAudioSessionActive()
+        }
+        #endif
+    }
+
+    @objc private func handleAppWillTerminate() {
+        #if os(iOS) && canImport(ActivityKit)
+        if #available(iOS 16.1, *) {
+            Task { @MainActor in
+                FuyaoLiveActivityManager.shared.clearAllActivities()
+            }
         }
         #endif
     }

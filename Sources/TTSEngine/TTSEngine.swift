@@ -313,6 +313,30 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
     /// 科大讯飞超拟人 TTS (WebSocket)
     private func synthesizeWithXfyunSuper(text: String, voice: Voice) async throws -> AudioData {
+        let maxAttempts = 3
+        var lastError: Error?
+
+        for attempt in 1...maxAttempts {
+            do {
+                return try await synthesizeWithXfyunSuperAttempt(text: text, voice: voice)
+            } catch {
+                lastError = error
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let shouldRetry = isRetryableXfyunConnectionError(message)
+
+                guard shouldRetry, attempt < maxAttempts else {
+                    throw error
+                }
+
+                NSLog("⚠️ 讯飞超拟人连接失败，准备第 %d 次重试。error=%@", attempt + 1, message)
+                try? await Task.sleep(nanoseconds: UInt64(350_000_000 * attempt))
+            }
+        }
+
+        throw lastError ?? TTSError.networkError
+    }
+
+    private func synthesizeWithXfyunSuperAttempt(text: String, voice: Voice) async throws -> AudioData {
         let components = config.apiKey.components(separatedBy: ":")
         guard components.count == 3 else { throw TTSError.invalidConfiguration }
         let appId = components[0]
@@ -399,10 +423,12 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                 return
             }
 
-            task.send(.string(jsonStr)) { err in
-                if let err = err {
-                    task.cancel()
-                    resumeOnce(with: .failure(TTSError.apiError(err.localizedDescription)))
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.12) {
+                task.send(.string(jsonStr)) { err in
+                    if let err = err {
+                        task.cancel()
+                        resumeOnce(with: .failure(TTSError.apiError(err.localizedDescription)))
+                    }
                 }
             }
 
@@ -465,6 +491,17 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
         f.timeZone = TimeZone(identifier: "GMT")
         return f.string(from: Date())
+    }
+
+    private func isRetryableXfyunConnectionError(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("socket")
+            || normalized.contains("not connected")
+            || normalized.contains("tls")
+            || message.contains("未连接")
+            || message.contains("超时")
+            || message.contains("安全连接失败")
+            || normalized.contains("network connection was lost")
     }
 
     private func hmacSHA256Base64(data: Data, key: Data) -> String {

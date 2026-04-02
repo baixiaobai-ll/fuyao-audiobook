@@ -13,6 +13,18 @@ final class FuyaoLiveActivityManager {
 
     private init() {}
 
+    func clearAllActivities() {
+        lastState = nil
+        lastUpdateTime = 0
+        currentActivity = nil
+
+        Task {
+            for activity in Activity<FuyaoPlaybackAttributes>.activities {
+                await activity.end(dismissalPolicy: .immediate)
+            }
+        }
+    }
+
     func sync(with state: FuyaoPlaybackLiveState?) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
@@ -69,12 +81,12 @@ final class FuyaoLiveActivityManager {
     func end() {
         lastState = nil
         lastUpdateTime = 0
-
-        guard let activity = currentActivity else { return }
         currentActivity = nil
 
         Task {
-            await activity.end(dismissalPolicy: .immediate)
+            for activity in Activity<FuyaoPlaybackAttributes>.activities {
+                await activity.end(dismissalPolicy: .immediate)
+            }
         }
     }
 }
