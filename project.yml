@@ -22,6 +22,7 @@ targets:
     resources:
       - path: Resources
       - path: App/Assets.xcassets
+      - path: Config.plist
     dependencies:
       - sdk: SwiftUI.framework
       - sdk: AVFoundation.framework
