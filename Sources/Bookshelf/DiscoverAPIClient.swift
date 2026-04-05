@@ -8,19 +8,39 @@ enum DiscoverAPIClient {
     }
 
     static func fetchRanking() async -> [BookSearchResult]? {
-        await fetchBooks(pathComponent: "v1/discover/ranking")
+        await fetchBooks(path: "v1/discover/ranking")
     }
 
     static func fetchCategory(sort: String) async -> [BookSearchResult]? {
-        let encoded = sort.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sort
-        return await fetchBooks(pathComponent: "v1/discover/category?sort=\(encoded)")
+        await fetchBooks(
+            path: "v1/discover/category",
+            queryItems: [URLQueryItem(name: "sort", value: sort)]
+        )
     }
 
-    private static func fetchBooks(pathComponent: String) async -> [BookSearchResult]? {
+    static func fetchSearch(keyword: String) async -> [BookSearchResult]? {
+        await fetchBooks(
+            path: "v1/discover/search",
+            queryItems: [URLQueryItem(name: "q", value: keyword)]
+        )
+    }
+
+    private static func fetchBooks(
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) async -> [BookSearchResult]? {
         guard let base = Config.discoverAPIBaseURL else { return nil }
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !trimmed.isEmpty, let url = URL(string: "\(trimmed)/\(pathComponent)") else { return nil }
+        guard !trimmed.isEmpty,
+              let baseURL = URL(string: trimmed),
+              var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        guard let url = components.url else { return nil }
 
         var request = URLRequest(url: url, timeoutInterval: 20)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -40,28 +60,93 @@ enum DiscoverAPIClient {
     private static func decodeBookList(_ data: Data) -> [BookSearchResult]? {
         let decoder = JSONDecoder()
         if let list = try? decoder.decode([BookSearchResult].self, from: data), !list.isEmpty {
-            return list
+            return normalized(list)
         }
         if let env = try? decoder.decode(BooksEnvelope.self, from: data), !env.books.isEmpty {
-            return env.books
+            return normalized(env.books)
         }
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let arr = obj["data"] as? [[String: Any]] {
-            return arr.compactMap { dict in
-                guard let title = dict["title"] as? String,
-                      let author = dict["author"] as? String,
-                      let bookId = dict["bookId"] as? String ?? dict["id"] as? String else { return nil }
-                let cover = dict["coverURL"] as? String ?? dict["cover"] as? String
-                let bookURL = dict["bookURL"] as? String ?? dict["url"] as? String ?? ""
-                let intro = dict["intro"] as? String ?? ""
-                return BookSearchResult(
-                    title: title,
-                    author: author,
-                    coverURL: cover,
-                    bookURL: bookURL,
-                    bookId: bookId,
-                    intro: intro
-                )
+        if let object = try? JSONSerialization.jsonObject(with: data),
+           let list = extractBookList(from: object),
+           !list.isEmpty {
+            return normalized(list)
+        }
+        return nil
+    }
+
+    private static func normalized(_ results: [BookSearchResult]) -> [BookSearchResult] {
+        results.map { result in
+            let bookId = BookSourceEngine.normalizedBookId(from: result.bookId, bookURL: result.bookURL) ?? result.bookId
+            let bookURL = BookSourceEngine.normalizedBookURL(from: result.bookURL, bookId: bookId) ?? result.bookURL
+            return BookSearchResult(
+                title: result.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                author: result.author.trimmingCharacters(in: .whitespacesAndNewlines),
+                coverURL: result.coverURL,
+                bookURL: bookURL,
+                bookId: bookId,
+                intro: result.intro.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    private static func extractBookList(from object: Any) -> [BookSearchResult]? {
+        if let rows = object as? [[String: Any]] {
+            let list = rows.compactMap { parseBookResult($0) }
+            return list.isEmpty ? nil : list
+        }
+
+        guard let dict = object as? [String: Any] else { return nil }
+
+        for key in ["data", "list", "books", "results", "items"] {
+            if let value = dict[key],
+               let list = extractBookList(from: value),
+               !list.isEmpty {
+                return list
+            }
+        }
+
+        for value in dict.values {
+            if let list = extractBookList(from: value), !list.isEmpty {
+                return list
+            }
+        }
+
+        return nil
+    }
+
+    private static func parseBookResult(_ dict: [String: Any]) -> BookSearchResult? {
+        guard let title = stringValue(in: dict, keys: ["title", "bookName", "name"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else {
+            return nil
+        }
+
+        let rawURL = stringValue(in: dict, keys: ["bookURL", "url", "detailUrl", "detailURL"])
+        let rawBookId = stringValue(in: dict, keys: ["bookId", "id"])
+        let normalizedBookId = BookSourceEngine.normalizedBookId(from: rawBookId, bookURL: rawURL) ?? rawBookId ?? ""
+        let normalizedBookURL = BookSourceEngine.normalizedBookURL(from: rawURL, bookId: normalizedBookId) ?? rawURL ?? ""
+
+        return BookSearchResult(
+            title: title,
+            author: (stringValue(in: dict, keys: ["author", "writer"]) ?? "未知")
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            coverURL: stringValue(in: dict, keys: ["coverURL", "cover", "img", "pic"]),
+            bookURL: normalizedBookURL,
+            bookId: normalizedBookId,
+            intro: (stringValue(in: dict, keys: ["intro", "desc", "description"]) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private static func stringValue(in dict: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = dict[key] as? String {
+                return value
+            }
+            if let value = dict[key] as? Int {
+                return String(value)
+            }
+            if let value = dict[key] as? NSNumber {
+                return value.stringValue
             }
         }
         return nil
