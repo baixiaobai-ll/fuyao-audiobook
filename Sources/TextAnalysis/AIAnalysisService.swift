@@ -20,6 +20,7 @@ private struct AIChatServiceConfig {
     let requestTimeout: TimeInterval
     let maxRetryAttempts: Int
     let temperature: Double
+    let maxOutputTokens: Int
 }
 
 /// OpenAI 兼容的聊天补全分析服务。
@@ -42,6 +43,10 @@ private final class OpenAICompatibleAnalysisService: AIAnalysisService {
                 ["role": "user", "content": prompt]
             ],
             "temperature": config.temperature,
+            "max_tokens": config.maxOutputTokens,
+            "response_format": [
+                "type": "json_object"
+            ],
             "stream": false
         ]
         let bodyData = try JSONSerialization.data(withJSONObject: body)
@@ -134,7 +139,7 @@ final class KimiAnalysisService: AIAnalysisService {
 
     init(
         apiKey: String,
-        model: String = "kimi-k2-0905-preview",
+        model: String = "kimi-k2-turbo-preview",
         baseURL: String = "https://api.moonshot.cn/v1"
     ) {
         service = OpenAICompatibleAnalysisService(config: AIChatServiceConfig(
@@ -142,9 +147,10 @@ final class KimiAnalysisService: AIAnalysisService {
             apiKey: apiKey,
             model: model,
             baseURL: baseURL,
-            requestTimeout: 60,
+            requestTimeout: 120,
             maxRetryAttempts: 3,
-            temperature: 0.2
+            temperature: 0.2,
+            maxOutputTokens: 20000
         ))
     }
 
@@ -169,7 +175,8 @@ final class QwenAnalysisService: AIAnalysisService {
             baseURL: baseURL,
             requestTimeout: 90,
             maxRetryAttempts: 3,
-            temperature: 0.3
+            temperature: 0.3,
+            maxOutputTokens: 1600
         ))
     }
 

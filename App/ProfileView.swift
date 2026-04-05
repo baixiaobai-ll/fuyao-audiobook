@@ -272,7 +272,11 @@ struct ProfileView: View {
     // MARK: - Provider Names
 
     private var aiProviderName: String {
-        "通义千问"
+        switch Config.aiProvider {
+        case .kimi: return "Kimi"
+        case .qwen: return "通义千问"
+        case .local: return "本地规则"
+        }
     }
 
     private var ttsProviderName: String {

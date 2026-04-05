@@ -69,7 +69,7 @@ struct Config {
 
         switch aiProvider {
         case .kimi:
-            return "kimi-k2-0905-preview"
+            return "kimi-k2-turbo-preview"
         case .qwen:
             return "qwen-plus"
         case .local:

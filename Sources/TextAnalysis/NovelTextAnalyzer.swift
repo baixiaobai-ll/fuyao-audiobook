@@ -43,8 +43,11 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         // 预处理文本
         let preprocessedText = preprocessText(text)
 
-        // 分段处理（避免单次请求过大）
-        let chunks = splitIntoChunks(preprocessedText, maxChunkSize: 3000)
+        // 分段处理（避免单次请求过大）。
+        // Kimi 在长文本结构化分析上更容易被“大块 + 并发”拖慢，
+        // 因此这里按 provider 收紧块大小，并限制并发度，优先保稳定。
+        let chunkSize = recommendedChunkSize
+        let chunks = splitIntoChunks(preprocessedText, maxChunkSize: chunkSize)
 
         var allSegments: [TextSegment] = []
         var allCharacters: Set<Character> = []
@@ -54,16 +57,29 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         // 并发分析各个文本块
         var chunkResults: [(index: Int, result: ChunkAnalysisResult)] = []
 
+        let maxParallelChunks = recommendedAnalysisParallelism
         try await withThrowingTaskGroup(of: (Int, ChunkAnalysisResult).self) { group in
-            for (index, chunk) in chunks.enumerated() {
+            var nextScheduled = 0
+
+            func schedule(_ index: Int) {
+                let chunk = chunks[index]
                 group.addTask {
                     let result = try await self.analyzeChunk(chunk, chunkIndex: index)
                     return (index, result)
                 }
             }
 
-            for try await chunkResult in group {
+            while nextScheduled < min(maxParallelChunks, chunks.count) {
+                schedule(nextScheduled)
+                nextScheduled += 1
+            }
+
+            while let chunkResult = try await group.next() {
                 chunkResults.append(chunkResult)
+                if nextScheduled < chunks.count {
+                    schedule(nextScheduled)
+                    nextScheduled += 1
+                }
             }
         }
 
@@ -121,7 +137,28 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     private func analyzeChunk(_ chunk: String, chunkIndex: Int) async throws -> ChunkAnalysisResult {
         let prompt = buildAnalysisPrompt(for: chunk)
         let response = try await aiService.analyze(prompt: prompt)
-        return try parseAnalysisResponse(response, originalText: chunk)
+        do {
+            return try parseAnalysisResponse(response, originalText: chunk)
+        } catch {
+            let previewLimit = 600
+            let preview = response.count > previewLimit
+                ? String(response.prefix(previewLimit)) + "\n...<truncated>"
+                : response
+            let responseLength = response.count
+            let braceBalance = response.reduce(into: 0) { partial, character in
+                if character == "{" { partial += 1 }
+                if character == "}" { partial -= 1 }
+            }
+            print("""
+            ⚠️ 第 \(chunkIndex + 1) 个分析分块 JSON 解析失败，回退到本地规则分析：\(error.localizedDescription)
+            📄 原始返回长度: \(responseLength) 字符
+            🧩 花括号平衡: \(braceBalance)
+            📄 原始返回预览:
+            \(preview)
+            """)
+            let localResponse = try await LocalRuleAnalysisService().analyze(prompt: prompt)
+            return try parseAnalysisResponse(localResponse, originalText: chunk)
+        }
     }
 
     /// 构建分析提示词
@@ -282,6 +319,28 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         }
 
         return chunks.isEmpty ? [text] : chunks
+    }
+
+    private var recommendedChunkSize: Int {
+        switch Config.aiProvider {
+        case .kimi:
+            return 50000
+        case .qwen:
+            return 2600
+        case .local:
+            return 3000
+        }
+    }
+
+    private var recommendedAnalysisParallelism: Int {
+        switch Config.aiProvider {
+        case .kimi:
+            return 1
+        case .qwen:
+            return 2
+        case .local:
+            return 4
+        }
     }
 
     /// 提取 JSON 字符串

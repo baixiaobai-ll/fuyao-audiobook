@@ -726,12 +726,18 @@ struct BookDetailView: View {
 
     private func friendlyGenerationErrorMessage(_ error: Error) -> String {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let providerName: String
+        switch Config.aiProvider {
+        case .kimi: providerName = "Kimi"
+        case .qwen: providerName = "通义千问"
+        case .local: providerName = "本地规则"
+        }
 
-        if message.contains("通义千问分析超时") {
+        if message.contains("分析超时") || message.contains("\(providerName) 分析超时") {
             return "文本分析超时。请检查网络，或稍后重试。"
         }
-        if message.contains("通义千问鉴权失败") {
-            return "文本分析鉴权失败。请检查 Config.plist 里的 AI_API_KEY，并确认 AI_PROVIDER=qwen。"
+        if message.contains("鉴权失败") || message.contains("\(providerName) 鉴权失败") {
+            return "文本分析鉴权失败。请检查 Config.plist 里的 AI_API_KEY，并确认 AI_PROVIDER=\(Config.aiProvider.rawValue)。"
         }
         if message.contains("请求过于频繁") {
             return "文本分析请求过于频繁，请稍后再试。"
