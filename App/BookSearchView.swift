@@ -419,7 +419,7 @@ struct BookSearchView: View {
 
     private func discoverBook(for result: BookSearchResult) -> Book {
         let normalizedBookId = BookSourceEngine.normalizedBookId(from: result.bookId, bookURL: result.bookURL)
-        Book(
+        return Book(
             title: result.title,
             author: result.author,
             coverURL: result.coverURL,
