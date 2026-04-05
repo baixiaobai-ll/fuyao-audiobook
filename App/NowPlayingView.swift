@@ -1,6 +1,11 @@
 import SwiftUI
 
 struct NowPlayingView: View {
+    private enum ContentMode {
+        case cover
+        case text
+    }
+
     @EnvironmentObject var player: AudioBookPlayer
     @EnvironmentObject var store: BookshelfStore
 
@@ -8,35 +13,55 @@ struct NowPlayingView: View {
     @State private var dragValue: Double = 0
     @State private var showSleepTimer = false
     @State private var showPlaylist = false
-    @State private var showChapterTextSheet = false
+    @State private var contentMode: ContentMode = .cover
     @State private var chapterTextBody: String?
     @State private var chapterTextHint: String?
     @State private var chapterSwitchError: String?
     @State private var isSwitchingChapter = false
-
-    private let rates: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
+    private let pageBlue = Color(red: 0.52, green: 0.76, blue: 0.98)
+    private let pagePurple = Color(red: 0.66, green: 0.54, blue: 0.96)
+    private let pageIndigo = Color(red: 0.35, green: 0.45, blue: 0.82)
 
     var body: some View {
         NavigationStack {
-            Group {
-                if player.currentPlaylist != nil {
-                    playerContent
-                } else {
-                    emptyState
-                }
-            }
-            .navigationTitle("播放中")
-            .navigationBarTitleDisplayMode(.inline)
-            .overlay {
-                if isSwitchingChapter {
-                    ZStack {
-                        Color.black.opacity(0.2).ignoresSafeArea()
-                        ProgressView("切换章节…")
-                            .padding(24)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            ZStack {
+                playbackBackground
+
+                Group {
+                    if player.currentPlaylist != nil {
+                        playerContent
+                    } else {
+                        emptyState
                     }
                 }
+                .padding(.top, 4)
+
+                if isSwitchingChapter {
+                    ZStack {
+                        Color.black.opacity(0.18).ignoresSafeArea()
+
+                        SurfaceCard(padding: 20) {
+                            HStack(spacing: 12) {
+                                ProgressView()
+                                    .tint(pageIndigo)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("正在切换章节")
+                                        .font(.headline)
+                                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    Text("请稍等，新的音频内容马上就绪。")
+                                        .font(.footnote)
+                                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 28)
+                    }
+                    .transition(.opacity)
+                }
             }
+            .navigationTitle(player.currentPlaylist != nil ? topPlaybackDisplayTitle : "播放中")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(pageIndigo)
             .alert("切换失败", isPresented: Binding(
                 get: { chapterSwitchError != nil },
                 set: { if !$0 { chapterSwitchError = nil } }
@@ -45,71 +70,544 @@ struct NowPlayingView: View {
             } message: {
                 if let e = chapterSwitchError { Text(e) }
             }
-            .sheet(isPresented: $showChapterTextSheet) {
-                chapterTextReaderSheet
+            .onChange(of: contentMode) { mode in
+                if mode == .text {
+                    loadInlineChapterText()
+                }
+            }
+            .onChange(of: currentChapterContentKey) { _ in
+                if contentMode == .text {
+                    loadInlineChapterText()
+                }
             }
         }
+    }
+
+    private var playbackBackground: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.95, green: 0.97, blue: 1.0),
+                Color(red: 0.92, green: 0.94, blue: 1.0),
+                Color(red: 0.98, green: 0.98, blue: 1.0),
+                Color.white
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .overlay(alignment: .topTrailing) {
+            Circle()
+                .fill(pagePurple.opacity(0.18))
+                .frame(width: 260, height: 260)
+                .blur(radius: 24)
+                .offset(x: 88, y: -52)
+        }
+        .overlay(alignment: .topLeading) {
+            Circle()
+                .fill(pageBlue.opacity(0.16))
+                .frame(width: 220, height: 220)
+                .blur(radius: 22)
+                .offset(x: -72, y: -68)
+        }
+        .ignoresSafeArea()
     }
 
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image("empty_playing")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(height: 200)
+        ScrollView {
+            VStack(spacing: 18) {
+                Spacer(minLength: 44)
 
-            Text("暂无播放内容")
-                .font(.title3)
-                .foregroundColor(.secondary)
-            Text("去书架选一本书吧")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                Image("empty_playing")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: 208)
+
+                SurfaceCard {
+                    VStack(spacing: 16) {
+                        TintedIconBadge(icon: "play.circle.fill", size: 44, iconSize: 18)
+
+                        VStack(spacing: 8) {
+                            Text("暂时还没有播放内容")
+                                .font(.title3.bold())
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                            Text("从书架选择一本书开始收听，或者在发现页挑一本今晚想听的故事。")
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        HStack(spacing: 10) {
+                            infoPill(title: "支持章节切换", icon: "list.bullet.rectangle")
+                            infoPill(title: "支持定时关闭", icon: "timer")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 32)
         }
     }
 
     // MARK: - Player Content
 
     private var playerContent: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        VStack(spacing: 14) {
+            coverFocusSection
+            secondaryActionStrip
+            transportPanel
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var coverFocusSection: some View {
+        VStack(spacing: 12) {
+            coverModeBar
+
+            contentStage
 
             VStack(spacing: 8) {
-                if let ctx = player.currentPlaylist?.chapterContext {
-                    Text(ctx.bookTitle)
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    Text(currentChapterTitle(from: ctx))
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                } else {
-                    Text(player.currentPlaylist?.title ?? "")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                Text(playbackSubtitle)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+
+                if let remaining = player.sleepTimerRemaining {
+                    infoPill(title: "剩余 \(formatTime(remaining))", icon: "moon.zzz.fill")
                 }
             }
-
-            playbackArtwork
-                .padding(.vertical, 24)
-
-            progressSection
-
-            rateSelector
-
-            controlButtons
-
-            bottomActions
-
-            Spacer()
         }
-        .padding(.horizontal)
     }
+
+    private var coverModeBar: some View {
+        HStack(spacing: 10) {
+            modeChip(title: "封面", active: contentMode == .cover) { contentMode = .cover }
+            modeChip(title: "正文", active: contentMode == .text) { contentMode = .text }
+        }
+    }
+
+    private func modeChip(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            chipLabel(title: title, active: active)
+        }
+        .buttonStyle(LiftPressButtonStyle(scale: 0.97))
+    }
+
+    private func chipLabel(title: String, active: Bool) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(active ? .white : pageIndigo)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .background(
+                Group {
+                    if active {
+                        LinearGradient(
+                            colors: [pageBlue, pagePurple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    } else {
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.7), pagePurple.opacity(0.1)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    }
+                }
+            )
+            .clipShape(Capsule(style: .continuous))
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.white.opacity(active ? 0.12 : 0.72), lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var contentStage: some View {
+        if contentMode == .text {
+            inlineTextPanel
+        } else {
+            artworkButton
+        }
+    }
+
+    @ViewBuilder
+    private var artworkButton: some View {
+        if let ctx = player.currentPlaylist?.chapterContext {
+            Button(action: { contentMode = .text }) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    pageBlue.opacity(0.22),
+                                    pagePurple.opacity(0.20)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 174, height: 242)
+                        .offset(x: 10, y: 10)
+
+                    BookCoverView(
+                        coverURL: coverURLForPlayback(ctx: ctx),
+                        title: ctx.bookTitle,
+                        size: CGSize(width: 166, height: 232)
+                    )
+                }
+            }
+            .buttonStyle(LiftPressButtonStyle(scale: 0.985))
+            .accessibilityLabel("查看章节正文")
+        } else {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [pageBlue.opacity(0.24), pagePurple.opacity(0.26)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 188, height: 188)
+
+                Image(systemName: "headphones")
+                    .font(.system(size: 72, weight: .semibold))
+                    .foregroundStyle(pageIndigo)
+            }
+        }
+    }
+
+    private var inlineTextPanel: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.78),
+                            pagePurple.opacity(0.08)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.76), lineWidth: 1)
+                )
+
+            Group {
+                if let hint = chapterTextHint {
+                    VStack(spacing: 10) {
+                        TintedIconBadge(icon: "doc.text", size: 42, iconSize: 16)
+                        Text(hint)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 20)
+                    }
+                } else if let body = chapterTextBody {
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(formattedChapterParagraphs(from: body), id: \.self) { paragraph in
+                                Text(paragraph)
+                                    .font(.body)
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .lineSpacing(7)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 18)
+                    }
+                } else {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .tint(pageIndigo)
+                        Text("正在加载正文…")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                }
+            }
+        }
+        .frame(height: 252)
+    }
+
+    private var transportPanel: some View {
+        SurfaceCard(padding: 14) {
+            VStack(spacing: 14) {
+                VStack(spacing: 6) {
+                    HStack {
+                        Text("\(Int((isDragging ? draggedPercentage : player.progress.percentage).rounded()))%")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(pageIndigo)
+                        Spacer()
+                        Text(isDragging ? "松手后跳转" : "拖动可快进快退")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { isDragging ? dragValue : sliderValue },
+                            set: { newValue in
+                                isDragging = true
+                                dragValue = newValue
+                            }
+                        ),
+                        in: 0...safeMaxDuration,
+                        onEditingChanged: { editing in
+                            if !editing {
+                                player.seekToAggregatedTime(dragValue)
+                                isDragging = false
+                            }
+                        }
+                    )
+                    .tint(pagePurple)
+
+                    HStack {
+                        Text(formatTime(isDragging ? dragValue : player.progress.currentTime))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .monospacedDigit()
+                        Spacer()
+                        Text(formatTime(player.progress.duration))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .monospacedDigit()
+                    }
+                }
+
+                HStack(spacing: 18) {
+                    playerCircleButton(
+                        icon: "backward.fill",
+                        size: 52,
+                        enabled: !isSwitchingChapter && chapterNavBackwardEnabled(),
+                        filled: false
+                    ) {
+                        goBackward()
+                    }
+
+                    Button {
+                        if player.state == .playing {
+                            player.pause()
+                        } else {
+                            player.play()
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [pageBlue, pagePurple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                                )
+
+                            Image(systemName: playButtonIcon)
+                                .font(.system(size: 30, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(width: 78, height: 78)
+                        .shadow(color: pagePurple.opacity(0.22), radius: 12, x: 0, y: 5)
+                    }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.95))
+
+                    playerCircleButton(
+                        icon: "forward.fill",
+                        size: 52,
+                        enabled: !isSwitchingChapter && chapterNavForwardEnabled(),
+                        filled: false
+                    ) {
+                        goForward()
+                    }
+                }
+            }
+        }
+    }
+
+    private var secondaryActionStrip: some View {
+        HStack(spacing: 12) {
+            actionPanelButton(
+                title: repeatLabel,
+                subtitle: "循环模式",
+                icon: repeatIcon,
+                active: player.config.repeatMode != .none
+            ) {
+                cycleRepeatMode()
+            }
+
+            actionPanelButton(
+                title: player.currentPlaylist?.chapterContext != nil ? "章节目录" : "播放列表",
+                subtitle: "快速跳转",
+                icon: "list.bullet",
+                active: showPlaylist
+            ) {
+                showPlaylist = true
+            }
+
+            actionPanelButton(
+                title: player.sleepTimerRemaining != nil ? formatTime(player.sleepTimerRemaining ?? 0) : "定时",
+                subtitle: "睡眠定时",
+                icon: "timer",
+                active: player.sleepTimerRemaining != nil
+            ) {
+                showSleepTimer = true
+            }
+            .confirmationDialog("定时关闭", isPresented: $showSleepTimer) {
+                Button("15 分钟") { player.setSleepTimer(minutes: 15) }
+                Button("30 分钟") { player.setSleepTimer(minutes: 30) }
+                Button("60 分钟") { player.setSleepTimer(minutes: 60) }
+                if player.sleepTimerRemaining != nil {
+                    Button("取消定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
+        .padding(.horizontal, 8)
+        .sheet(isPresented: $showPlaylist) {
+            playlistSheet
+        }
+    }
+
+    // MARK: - Playback Text Helpers
+
+    private var currentBookTitle: String {
+        player.currentPlaylist?.chapterContext?.bookTitle ?? "当前书籍"
+    }
+
+    private var currentPrimaryTitle: String {
+        if let ctx = player.currentPlaylist?.chapterContext {
+            return currentChapterTitle(from: ctx)
+        }
+        return player.currentPlaylist?.title ?? "暂无标题"
+    }
+
+    private var topPlaybackDisplayTitle: String {
+        guard player.currentPlaylist != nil else { return "播放中" }
+        if currentBookTitle == currentPrimaryTitle || currentBookTitle.isEmpty {
+            return currentPrimaryTitle
+        }
+        return "\(currentBookTitle) · \(currentPrimaryTitle)"
+    }
+
+    private var playbackSubtitle: String {
+        if let ctx = player.currentPlaylist?.chapterContext {
+            return "正在收听《\(ctx.bookTitle)》中的章节内容，切换目录后会自动续播。"
+        }
+        return "当前正在播放合成好的音频内容。"
+    }
+
+    private var remainingTimeForDisplay: TimeInterval {
+        max(0, player.progress.duration - (isDragging ? dragValue : player.progress.currentTime))
+    }
+
+    private var draggedPercentage: Double {
+        guard safeMaxDuration > 0 else { return 0 }
+        return min(max((dragValue / safeMaxDuration) * 100, 0), 100)
+    }
+
+    private func infoPill(title: String, icon: String) -> some View {
+        CapsuleInfoTag(title: title, icon: icon, tint: pagePurple)
+    }
+
+    private func playerCircleButton(
+        icon: String,
+        size: CGFloat,
+        enabled: Bool,
+        filled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(
+                        filled
+                            ? AnyShapeStyle(LinearGradient(colors: [pageBlue, pagePurple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            : AnyShapeStyle(Color.white.opacity(enabled ? 0.72 : 0.46))
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(
+                                filled ? Color.white.opacity(0.14) : Color.white.opacity(0.78),
+                                lineWidth: 1
+                            )
+                    )
+
+                Image(systemName: icon)
+                    .font(.system(size: filled ? 30 : 20, weight: .semibold))
+                    .foregroundStyle(filled ? .white : (enabled ? pageIndigo : Color.secondary))
+            }
+            .frame(width: size, height: size)
+            .shadow(color: filled ? pagePurple.opacity(0.22) : .black.opacity(0.06), radius: 14, x: 0, y: 6)
+        }
+        .buttonStyle(LiftPressButtonStyle(scale: 0.95))
+        .disabled(!enabled)
+    }
+
+    private func actionPanelButton(
+        title: String,
+        subtitle: String,
+        icon: String,
+        active: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                TintedIconBadge(
+                    icon: icon,
+                    size: 30,
+                    iconSize: 12,
+                    primary: active ? pagePurple : pageBlue,
+                    secondary: pageIndigo
+                )
+
+                VStack(spacing: 2) {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.72),
+                                (active ? pagePurple : pageBlue).opacity(0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.white.opacity(0.72), lineWidth: 1)
+            )
+        }
+        .buttonStyle(LiftPressButtonStyle(scale: 0.98))
+    }
+
+    // MARK: - Existing Playback Helpers
 
     private func currentChapterTitle(from ctx: PlaybackChapterContext) -> String {
         if let t = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title, !t.isEmpty {
@@ -118,23 +616,8 @@ struct NowPlayingView: View {
         return player.currentPlaylist?.title ?? ""
     }
 
-    @ViewBuilder
-    private var playbackArtwork: some View {
-        if let ctx = player.currentPlaylist?.chapterContext {
-            Button(action: openChapterTextSheet) {
-                BookCoverView(
-                    coverURL: coverURLForPlayback(ctx: ctx),
-                    title: ctx.bookTitle,
-                    size: CGSize(width: 200, height: 280)
-                )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("查看章节正文")
-        } else {
-            Image(systemName: "headphones")
-                .font(.system(size: 100))
-                .foregroundColor(.accentColor)
-        }
+    private func resolvedChapterPosition(in ctx: PlaybackChapterContext) -> Int {
+        ctx.chapters.firstIndex(where: { $0.index == ctx.currentChapterIndex }) ?? 0
     }
 
     private func coverURLForPlayback(ctx: PlaybackChapterContext) -> String? {
@@ -142,7 +625,17 @@ struct NowPlayingView: View {
         return store.books.first(where: { $0.id == ctx.shelfBookId })?.coverURL
     }
 
+    private var currentChapterContentKey: String {
+        guard let ctx = player.currentPlaylist?.chapterContext else { return "none" }
+        return "\(ctx.shelfBookId.uuidString)-\(ctx.currentChapterIndex)"
+    }
+
     private func openChapterTextSheet() {
+        contentMode = .text
+        loadInlineChapterText()
+    }
+
+    private func loadInlineChapterText() {
         guard let ctx = player.currentPlaylist?.chapterContext else { return }
         guard let book = resolvedBook(for: ctx) else { return }
         let summary = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })
@@ -151,7 +644,6 @@ struct NowPlayingView: View {
 
         chapterTextBody = nil
         chapterTextHint = nil
-        showChapterTextSheet = true
 
         Task { @MainActor in
             do {
@@ -172,81 +664,17 @@ struct NowPlayingView: View {
         }
     }
 
-    private var chapterTextReaderSheet: some View {
-        NavigationStack {
-            Group {
-                if let hint = chapterTextHint {
-                    VStack(spacing: 12) {
-                        Image(systemName: "doc.text")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
-                        Text(hint)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let body = chapterTextBody {
-                    ScrollView {
-                        Text(body)
-                            .font(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                    }
-                } else {
-                    ProgressView("加载正文…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .navigationTitle("章节正文")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showChapterTextSheet = false }
-                }
-            }
-        }
+    private func formattedChapterParagraphs(from body: String) -> [String] {
+        let normalized = body.replacingOccurrences(of: "\r\n", with: "\n")
+        let paragraphs = normalized
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return paragraphs.isEmpty ? [body] : paragraphs
     }
 
     // MARK: - Progress
-
-    private var progressSection: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: {
-                        isDragging ? dragValue : sliderValue
-                    },
-                    set: { newValue in
-                        isDragging = true
-                        dragValue = newValue
-                    }
-                ),
-                in: 0...safeMaxDuration,
-                onEditingChanged: { editing in
-                    if !editing {
-                        player.seekToAggregatedTime(dragValue)
-                        isDragging = false
-                    }
-                }
-            )
-            .accentColor(.accentColor)
-
-            HStack {
-                Text(formatTime(isDragging ? dragValue : player.progress.currentTime))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-                Spacer()
-                Text(formatTime(player.progress.duration))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-            }
-        }
-        .padding(.horizontal)
-    }
 
     private var safeMaxDuration: Double {
         let d = player.progress.duration
@@ -260,74 +688,13 @@ struct NowPlayingView: View {
         return min(player.progress.currentTime, safeMaxDuration)
     }
 
-    // MARK: - Rate Selector
-
-    private var rateSelector: some View {
-        HStack(spacing: 12) {
-            ForEach(rates, id: \.self) { rate in
-                Button {
-                    player.setPlaybackRate(rate)
-                } label: {
-                    Text(rateLabel(rate))
-                        .font(.caption)
-                        .fontWeight(player.config.playbackRate == rate ? .bold : .regular)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            player.config.playbackRate == rate
-                                ? Color.accentColor.opacity(0.2)
-                                : Color.gray.opacity(0.1)
-                        )
-                        .cornerRadius(16)
-                }
-                .foregroundColor(player.config.playbackRate == rate ? .accentColor : .primary)
-            }
-        }
-    }
-
-    private func rateLabel(_ rate: Float) -> String {
-        if rate == Float(Int(rate)) {
-            return "\(Int(rate)).0x"
-        }
-        return "\(rate)x"
-    }
-
     // MARK: - Controls
-
-    private var controlButtons: some View {
-        HStack(spacing: 48) {
-            Button { goBackward() } label: {
-                Image(systemName: "backward.fill")
-                    .font(.title)
-            }
-            .disabled(isSwitchingChapter || !chapterNavBackwardEnabled())
-
-            Button {
-                if player.state == .playing {
-                    player.pause()
-                } else {
-                    player.play()
-                }
-            } label: {
-                Image(systemName: playButtonIcon)
-                    .font(.system(size: 60))
-            }
-
-            Button { goForward() } label: {
-                Image(systemName: "forward.fill")
-                    .font(.title)
-            }
-            .disabled(isSwitchingChapter || !chapterNavForwardEnabled())
-        }
-        .foregroundColor(.primary)
-        .padding(.vertical, 8)
-    }
 
     private var playButtonIcon: String {
         switch player.state {
-        case .playing: return "pause.circle.fill"
-        case .loading: return "hourglass.circle"
-        default: return "play.circle.fill"
+        case .playing: return "pause.fill"
+        case .loading: return "hourglass"
+        default: return "play.fill"
         }
     }
 
@@ -370,59 +737,6 @@ struct NowPlayingView: View {
 
     // MARK: - Bottom Actions
 
-    private var bottomActions: some View {
-        HStack(spacing: 40) {
-            Button {
-                cycleRepeatMode()
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: repeatIcon)
-                        .font(.title3)
-                    Text(repeatLabel)
-                        .font(.caption2)
-                }
-            }
-            .foregroundColor(player.config.repeatMode == .none ? .secondary : .accentColor)
-
-            Button { showSleepTimer = true } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "timer")
-                        .font(.title3)
-                    if let remaining = player.sleepTimerRemaining {
-                        Text(formatTime(remaining))
-                            .font(.caption2)
-                    } else {
-                        Text("定时")
-                            .font(.caption2)
-                    }
-                }
-            }
-            .foregroundColor(player.sleepTimerRemaining != nil ? .accentColor : .secondary)
-            .confirmationDialog("定时关闭", isPresented: $showSleepTimer) {
-                Button("15 分钟") { player.setSleepTimer(minutes: 15) }
-                Button("30 分钟") { player.setSleepTimer(minutes: 30) }
-                Button("60 分钟") { player.setSleepTimer(minutes: 60) }
-                if player.sleepTimerRemaining != nil {
-                    Button("取消定时", role: .destructive) { player.setSleepTimer(minutes: nil) }
-                }
-                Button("取消", role: .cancel) {}
-            }
-
-            Button { showPlaylist = true } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "list.bullet")
-                        .font(.title3)
-                    Text("目录")
-                        .font(.caption2)
-                }
-            }
-            .foregroundColor(.secondary)
-            .sheet(isPresented: $showPlaylist) {
-                playlistSheet
-            }
-        }
-    }
-
     private var repeatIcon: String {
         switch player.config.repeatMode {
         case .none: return "repeat"
@@ -434,8 +748,8 @@ struct NowPlayingView: View {
     private var repeatLabel: String {
         switch player.config.repeatMode {
         case .none: return "不循环"
-        case .one: return "单章"
-        case .all: return "列表"
+        case .one: return "单章循环"
+        case .all: return "列表循环"
         }
     }
 
@@ -451,56 +765,69 @@ struct NowPlayingView: View {
 
     private var playlistSheet: some View {
         NavigationStack {
-            List {
-                if let ctx = player.currentPlaylist?.chapterContext, !ctx.chapters.isEmpty {
-                    ForEach(ctx.chapters, id: \.index) { summary in
-                        Button {
-                            Task { await switchToChapter(index: summary.index) }
-                        } label: {
-                            HStack {
-                                Text(summary.title)
-                                    .font(.subheadline)
-                                    .fontWeight(summary.index == ctx.currentChapterIndex ? .bold : .regular)
-                                    .foregroundColor(.primary)
-                                    .lineLimit(2)
-                                Spacer()
-                                if summary.index == ctx.currentChapterIndex {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .foregroundColor(.accentColor)
+            ZStack {
+                playbackBackground.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 12) {
+                        if let ctx = player.currentPlaylist?.chapterContext, !ctx.chapters.isEmpty {
+                            ForEach(ctx.chapters, id: \.index) { summary in
+                                playlistRow(
+                                    title: summary.title,
+                                    active: summary.index == ctx.currentChapterIndex
+                                ) {
+                                    Task { await switchToChapter(index: summary.index) }
+                                }
+                            }
+                        } else if let playlist = player.currentPlaylist {
+                            ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
+                                playlistRow(
+                                    title: String(item.segment.text.prefix(60)) + (item.segment.text.count > 60 ? "…" : ""),
+                                    active: index == playlist.currentIndex
+                                ) {
+                                    player.jumpTo(index: index)
+                                    showPlaylist = false
                                 }
                             }
                         }
                     }
-                } else if let playlist = player.currentPlaylist {
-                    ForEach(Array(playlist.items.enumerated()), id: \.element.id) { index, item in
-                        Button {
-                            player.jumpTo(index: index)
-                            showPlaylist = false
-                        } label: {
-                            HStack {
-                                Text(item.segment.text.prefix(60) + (item.segment.text.count > 60 ? "…" : ""))
-                                    .font(.subheadline)
-                                    .fontWeight(index == playlist.currentIndex ? .bold : .regular)
-                                    .lineLimit(2)
-                                Spacer()
-                                if index == playlist.currentIndex {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .foregroundColor(.accentColor)
-                                }
-                            }
-                        }
-                        .foregroundColor(.primary)
-                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
                 }
             }
             .navigationTitle(player.currentPlaylist?.chapterContext != nil ? "章节目录" : "播放列表")
             .navigationBarTitleDisplayMode(.inline)
+            .tint(pageIndigo)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { showPlaylist = false }
                 }
             }
         }
+    }
+
+    private func playlistRow(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            SurfaceCard(padding: 14) {
+                HStack(spacing: 12) {
+                    TintedIconBadge(
+                        icon: active ? "speaker.wave.2.fill" : "play.fill",
+                        size: 32,
+                        iconSize: 12,
+                        primary: active ? pagePurple : pageBlue,
+                        secondary: pageIndigo
+                    )
+
+                    Text(title)
+                        .font(.subheadline.weight(active ? .semibold : .medium))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineLimit(2)
+
+                    Spacer()
+                }
+            }
+        }
+        .buttonStyle(LiftPressButtonStyle(scale: 0.99))
     }
 
     // MARK: - Chapter switch
@@ -570,8 +897,12 @@ struct NowPlayingView: View {
 
     private func formatTime(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let m = Int(seconds) / 60
+        let hours = Int(seconds) / 3600
+        let m = (Int(seconds) % 3600) / 60
         let s = Int(seconds) % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, m, s)
+        }
         return String(format: "%d:%02d", m, s)
     }
 }
