@@ -7,6 +7,9 @@
 
 import Foundation
 import CommonCrypto
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
 
 /// TTS 引擎协议
 protocol TTSEngineProtocol {
@@ -16,6 +19,18 @@ protocol TTSEngineProtocol {
 
 /// TTS 引擎
 final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
+
+    private enum TTSRequestPolicy {
+        static let httpTimeout: TimeInterval = 45
+        static let webSocketTimeout: TimeInterval = 60
+        static let maxRetryAttempts = 3
+        static let baseRetryDelay: TimeInterval = 0.6
+    }
+
+    private struct RetryableHTTPError: Error {
+        let statusCode: Int
+        let message: String
+    }
 
     private let config: TTSConfig
     private let ssmlGenerator: SSMLGenerator
@@ -79,7 +94,12 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
     /// 合成纯文本
     func synthesize(text: String, voice: Voice) async throws -> AudioData {
-        let cacheKey = "\(text.hashValue)_\(voice.id)"
+        let cacheKey = sha256Hex([
+            config.provider.rawValue,
+            text,
+            voice.provider.rawValue,
+            voice.id
+        ].joined(separator: "|"))
         if config.enableCache, let cachedAudio = cache.retrieve(key: cacheKey) {
             return cachedAudio
         }
@@ -115,7 +135,7 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
     /// OpenAI TTS
     private func synthesizeWithOpenAI(text: String, voice: Voice) async throws -> AudioData {
         let url = URL(string: "\(config.baseURL ?? "https://api.openai.com/v1")/audio/speech")!
-        var request = URLRequest(url: url, timeoutInterval: 120)
+        var request = URLRequest(url: url, timeoutInterval: TTSRequestPolicy.httpTimeout)
         request.httpMethod = "POST"
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -130,23 +150,13 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TTSError.networkError
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw TTSError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
-        }
+        let data = try await executeHTTPRequest(request, serviceName: "OpenAI TTS")
 
         let estimatedDuration = estimateDuration(text: text)
-
-        return AudioData(
+        return buildAudioData(
             data: data,
             format: .mp3,
-            duration: estimatedDuration,
+            fallbackDuration: estimatedDuration,
             sampleRate: voice.sampleRate
         )
     }
@@ -156,7 +166,7 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         let region = extractRegion(from: config.baseURL) ?? "eastasia"
         let url = URL(string: "https://\(region).tts.speech.microsoft.com/cognitiveservices/v1")!
 
-        var request = URLRequest(url: url, timeoutInterval: 120)
+        var request = URLRequest(url: url, timeoutInterval: TTSRequestPolicy.httpTimeout)
         request.httpMethod = "POST"
         request.setValue(config.apiKey, forHTTPHeaderField: "Ocp-Apim-Subscription-Key")
         request.setValue("application/ssml+xml", forHTTPHeaderField: "Content-Type")
@@ -165,24 +175,15 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
         request.httpBody = ssml.data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TTSError.networkError
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw TTSError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
-        }
+        let data = try await executeHTTPRequest(request, serviceName: "Azure TTS")
 
         let text = ssmlGenerator.extractText(from: ssml)
         let estimatedDuration = estimateDuration(text: text)
 
-        return AudioData(
+        return buildAudioData(
             data: data,
             format: .mp3,
-            duration: estimatedDuration,
+            fallbackDuration: estimatedDuration,
             sampleRate: 24000
         )
     }
@@ -223,15 +224,23 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             var accumulated = Data()
             var resumed = false
+            var timeoutWorkItem: DispatchWorkItem?
 
             func resumeOnce(with result: Result<AudioData, Error>) {
                 guard !resumed else { return }
                 resumed = true
+                timeoutWorkItem?.cancel()
                 continuation.resume(with: result)
             }
 
             let task = URLSession.shared.webSocketTask(with: url)
             task.resume()
+            timeoutWorkItem = scheduleWebSocketTimeout(
+                for: task,
+                seconds: TTSRequestPolicy.webSocketTimeout
+            ) {
+                resumeOnce(with: .failure(TTSError.requestTimedOut(TTSRequestPolicy.webSocketTimeout)))
+            }
 
             let voiceId = voice.id.isEmpty ? "x4_lingfei" : voice.id
             let body: [String: Any] = [
@@ -298,8 +307,12 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                         let status = (json["data"] as? [String: Any])?["status"] as? Int ?? 0
                         if status == 2 {
                             task.cancel()
-                            let result = AudioData(data: accumulated, format: .mp3,
-                                duration: self.estimateDuration(text: text), sampleRate: 16000)
+                            let result = self.buildAudioData(
+                                data: accumulated,
+                                format: .mp3,
+                                fallbackDuration: self.estimateDuration(text: text),
+                                sampleRate: 16000
+                            )
                             resumeOnce(with: .success(result))
                         } else {
                             receive()
@@ -313,27 +326,19 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
     /// 科大讯飞超拟人 TTS (WebSocket)
     private func synthesizeWithXfyunSuper(text: String, voice: Voice) async throws -> AudioData {
-        let maxAttempts = 3
-        var lastError: Error?
-
-        for attempt in 1...maxAttempts {
-            do {
-                return try await synthesizeWithXfyunSuperAttempt(text: text, voice: voice)
-            } catch {
-                lastError = error
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                let shouldRetry = isRetryableXfyunConnectionError(message)
-
-                guard shouldRetry, attempt < maxAttempts else {
-                    throw error
+        try await performRetriedOperation(
+            label: "讯飞超拟人 TTS",
+            shouldRetry: { [weak self] error in
+                guard let self else { return false }
+                if Self.isRetryableTransportError(error) {
+                    return true
                 }
-
-                NSLog("⚠️ 讯飞超拟人连接失败，准备第 %d 次重试。error=%@", attempt + 1, message)
-                try? await Task.sleep(nanoseconds: UInt64(350_000_000 * attempt))
+                let message = self.errorMessage(for: error)
+                return self.isRetryableXfyunConnectionError(message)
             }
+        ) {
+            try await synthesizeWithXfyunSuperAttempt(text: text, voice: voice)
         }
-
-        throw lastError ?? TTSError.networkError
     }
 
     private func synthesizeWithXfyunSuperAttempt(text: String, voice: Voice) async throws -> AudioData {
@@ -372,15 +377,23 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         return try await withCheckedThrowingContinuation { continuation in
             var accumulated = Data()
             var resumed = false
+            var timeoutWorkItem: DispatchWorkItem?
 
             func resumeOnce(with result: Result<AudioData, Error>) {
                 guard !resumed else { return }
                 resumed = true
+                timeoutWorkItem?.cancel()
                 continuation.resume(with: result)
             }
 
             let task = URLSession.shared.webSocketTask(with: url)
             task.resume()
+            timeoutWorkItem = scheduleWebSocketTimeout(
+                for: task,
+                seconds: TTSRequestPolicy.webSocketTimeout
+            ) {
+                resumeOnce(with: .failure(TTSError.requestTimedOut(TTSRequestPolicy.webSocketTimeout)))
+            }
 
             let body: [String: Any] = [
                 "header": [
@@ -472,8 +485,12 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                         print("🔍 超拟人状态: status=\(status), accumulated=\(accumulated.count) bytes")
                         if status == 2 {
                             task.cancel()
-                            let audioResult = AudioData(data: accumulated, format: .mp3,
-                                duration: self.estimateDuration(text: text), sampleRate: 24000)
+                            let audioResult = self.buildAudioData(
+                                data: accumulated,
+                                format: .mp3,
+                                fallbackDuration: self.estimateDuration(text: text),
+                                sampleRate: 24000
+                            )
                             resumeOnce(with: .success(audioResult))
                         } else {
                             receive()
@@ -516,10 +533,154 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
 
     // MARK: - Helper Methods
 
+    private func executeHTTPRequest(_ request: URLRequest, serviceName: String) async throws -> Data {
+        try await performRetriedOperation(
+            label: serviceName,
+            shouldRetry: { error in
+                error is RetryableHTTPError || Self.isRetryableTransportError(error)
+            }
+        ) {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw TTSError.networkError
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                if Self.isRetryableHTTPStatus(httpResponse.statusCode) {
+                    throw RetryableHTTPError(statusCode: httpResponse.statusCode, message: errorMessage)
+                }
+                throw TTSError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+            }
+
+            return data
+        }
+    }
+
+    private func performRetriedOperation<T>(
+        label: String,
+        maxAttempts: Int = TTSRequestPolicy.maxRetryAttempts,
+        shouldRetry: (Error) -> Bool,
+        operation: () async throws -> T
+    ) async throws -> T {
+        var lastError: Error?
+
+        for attempt in 1...maxAttempts {
+            do {
+                return try await operation()
+            } catch is CancellationError {
+                throw TTSError.networkError
+            } catch {
+                let normalized = normalize(error)
+                lastError = normalized
+                guard shouldRetry(error), attempt < maxAttempts else {
+                    throw normalized
+                }
+
+                let delaySeconds = TTSRequestPolicy.baseRetryDelay * Double(attempt)
+                NSLog(
+                    "⚠️ %@ 失败，%.1f 秒后重试第 %d/%d 次。error=%@",
+                    label,
+                    delaySeconds,
+                    attempt + 1,
+                    maxAttempts,
+                    errorMessage(for: normalized)
+                )
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            }
+        }
+
+        throw lastError ?? TTSError.networkError
+    }
+
+    private func normalize(_ error: Error) -> Error {
+        if let error = error as? TTSError {
+            return error
+        }
+        if let error = error as? RetryableHTTPError {
+            return TTSError.apiError("HTTP \(error.statusCode): \(error.message)")
+        }
+        if let error = error as? URLError {
+            switch error.code {
+            case .timedOut:
+                return TTSError.requestTimedOut(TTSRequestPolicy.httpTimeout)
+            case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost,
+                    .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff,
+                    .resourceUnavailable:
+                return TTSError.networkError
+            default:
+                return TTSError.apiError(error.localizedDescription)
+            }
+        }
+        return error
+    }
+
+    private static func isRetryableTransportError(_ error: Error) -> Bool {
+        if let error = error as? RetryableHTTPError {
+            return isRetryableHTTPStatus(error.statusCode)
+        }
+        if let error = error as? TTSError {
+            switch error {
+            case .networkError, .requestTimedOut:
+                return true
+            default:
+                return false
+            }
+        }
+        guard let error = error as? URLError else { return false }
+        switch error.code {
+        case .timedOut, .notConnectedToInternet, .networkConnectionLost,
+                .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isRetryableHTTPStatus(_ statusCode: Int) -> Bool {
+        [408, 409, 425, 429, 500, 502, 503, 504].contains(statusCode)
+    }
+
+    private func scheduleWebSocketTimeout(
+        for task: URLSessionWebSocketTask,
+        seconds: TimeInterval,
+        onTimeout: @escaping () -> Void
+    ) -> DispatchWorkItem {
+        let workItem = DispatchWorkItem {
+            task.cancel(with: .goingAway, reason: nil)
+            onTimeout()
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds, execute: workItem)
+        return workItem
+    }
+
+    private func buildAudioData(
+        data: Data,
+        format: AudioData.AudioFormat,
+        fallbackDuration: TimeInterval,
+        sampleRate: Int
+    ) -> AudioData {
+        let resolvedDuration = actualDuration(for: data) ?? fallbackDuration
+        return AudioData(
+            data: data,
+            format: format,
+            duration: resolvedDuration,
+            sampleRate: sampleRate
+        )
+    }
+
     /// 生成缓存键
     private func generateCacheKey(segment: TextSegment, voice: Voice) -> String {
-        let content = "\(segment.text)_\(segment.emotion.rawValue)_\(voice.id)"
-        return String(content.hashValue)
+        let content = [
+            config.provider.rawValue,
+            segment.text,
+            segment.emotion.rawValue,
+            voice.provider.rawValue,
+            voice.id
+        ].joined(separator: "|")
+        return sha256Hex(content)
     }
 
     /// 估算音频时长
@@ -538,6 +699,35 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
             return String(urlString[range])
         }
         return nil
+    }
+
+    private func errorMessage(for error: Error) -> String {
+        if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+            return localized
+        }
+        return error.localizedDescription
+    }
+
+    private func sha256Hex(_ value: String) -> String {
+        guard let data = value.data(using: .utf8) else {
+            return String(value.hashValue)
+        }
+
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { rawBuffer in
+            _ = CC_SHA256(rawBuffer.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func actualDuration(for data: Data) -> TimeInterval? {
+        #if canImport(AVFoundation)
+        guard let player = try? AVAudioPlayer(data: data) else { return nil }
+        let duration = player.duration
+        return (duration.isFinite && duration > 0) ? duration : nil
+        #else
+        return nil
+        #endif
     }
 }
 
@@ -577,6 +767,7 @@ enum TTSError: LocalizedError {
     case unsupportedProvider
     case apiError(String)
     case networkError
+    case requestTimedOut(TimeInterval)
     case audioProcessingError
 
     var errorDescription: String? {
@@ -589,6 +780,8 @@ enum TTSError: LocalizedError {
             return "TTS API 错误: \(message)"
         case .networkError:
             return "网络连接失败"
+        case .requestTimedOut(let seconds):
+            return "TTS 请求超时（\(Int(seconds)) 秒）"
         case .audioProcessingError:
             return "音频处理失败"
         }

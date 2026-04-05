@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CommonCrypto
 
 /// 文本分析器协议
 protocol TextAnalyzerProtocol {
@@ -51,34 +52,40 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         var segmentOrder = 0
 
         // 并发分析各个文本块
-        try await withThrowingTaskGroup(of: ChunkAnalysisResult.self) { group in
+        var chunkResults: [(index: Int, result: ChunkAnalysisResult)] = []
+
+        try await withThrowingTaskGroup(of: (Int, ChunkAnalysisResult).self) { group in
             for (index, chunk) in chunks.enumerated() {
                 group.addTask {
-                    try await self.analyzeChunk(chunk, chunkIndex: index)
+                    let result = try await self.analyzeChunk(chunk, chunkIndex: index)
+                    return (index, result)
                 }
             }
 
-            for try await result in group {
-                // 更新片段顺序
-                let orderedSegments = result.segments.map { segment in
-                    var updated = segment
-                    updated = TextSegment(
-                        id: segment.id,
-                        text: segment.text,
-                        type: segment.type,
-                        speaker: segment.speaker,
-                        emotion: segment.emotion,
-                        scene: segment.scene,
-                        order: segmentOrder
-                    )
-                    segmentOrder += 1
-                    return updated
-                }
-
-                allSegments.append(contentsOf: orderedSegments)
-                allCharacters.formUnion(result.characters)
-                allScenes.append(contentsOf: result.scenes)
+            for try await chunkResult in group {
+                chunkResults.append(chunkResult)
             }
+        }
+
+        for (_, result) in chunkResults.sorted(by: { $0.index < $1.index }) {
+            let orderedSegments = result.segments.map { segment in
+                var updated = segment
+                updated = TextSegment(
+                    id: segment.id,
+                    text: segment.text,
+                    type: segment.type,
+                    speaker: segment.speaker,
+                    emotion: segment.emotion,
+                    scene: segment.scene,
+                    order: segmentOrder
+                )
+                segmentOrder += 1
+                return updated
+            }
+
+            allSegments.append(contentsOf: orderedSegments)
+            allCharacters.formUnion(result.characters)
+            allScenes.append(contentsOf: result.scenes)
         }
 
         // 按顺序排序
@@ -343,7 +350,15 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
     /// 生成缓存键
     private func generateCacheKey(for text: String) -> String {
-        return text.prefix(100).hash.description
+        let canonical = Self.canonicalTextForPlayback(text)
+        guard let data = canonical.data(using: .utf8) else {
+            return String(canonical.hashValue)
+        }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { rawBuffer in
+            _ = CC_SHA256(rawBuffer.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -381,6 +396,7 @@ enum AnalysisError: LocalizedError {
     case invalidResponse
     case apiError(String)
     case networkError
+    case requestTimedOut(providerName: String, seconds: TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -390,6 +406,35 @@ enum AnalysisError: LocalizedError {
             return "API 错误: \(message)"
         case .networkError:
             return "网络连接失败"
+        case .requestTimedOut(let providerName, let seconds):
+            return "\(providerName) 分析超时（\(Int(seconds)) 秒）"
+        }
+    }
+
+    var isRetryable: Bool {
+        switch self {
+        case .networkError, .requestTimedOut(_, _):
+            return true
+        case .apiError(let message):
+            return message.contains("HTTP 408")
+                || message.contains("HTTP 409")
+                || message.contains("HTTP 425")
+                || message.contains("HTTP 429")
+                || message.contains("HTTP 500")
+                || message.contains("HTTP 502")
+                || message.contains("HTTP 503")
+                || message.contains("HTTP 504")
+        case .invalidResponse:
+            return false
+        }
+    }
+
+    var allowsLocalFallback: Bool {
+        switch self {
+        case .invalidResponse, .networkError, .requestTimedOut(_, _):
+            return true
+        case .apiError(let message):
+            return !message.contains("鉴权失败")
         }
     }
 }

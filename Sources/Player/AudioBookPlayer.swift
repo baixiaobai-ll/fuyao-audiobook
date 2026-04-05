@@ -56,11 +56,22 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     public func load(playlist: Playlist) {
         currentPlaylist = playlist
         state = .idle
+        var restoredTime: TimeInterval = 0
 
         // 尝试恢复上次播放位置
         if let session = sessionManager.loadSession(for: playlist.id) {
             currentPlaylist?.currentIndex = session.currentItemIndex
+            restoredTime = max(0, session.currentTime)
             print("📖 恢复播放位置: 第 \(session.currentItemIndex + 1) 项")
+        }
+
+        if let currentPlaylist {
+            progress = PlaybackProgress(
+                currentTime: restoredTime,
+                duration: max(0, currentPlaylist.totalDuration),
+                currentItemIndex: currentPlaylist.currentIndex,
+                totalItems: currentPlaylist.items.count
+            )
         }
 
         print("📚 已加载播放列表: \(playlist.title), 共 \(playlist.items.count) 项")
@@ -71,7 +82,15 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     /// 追加播放项（流式播放时使用）
     public func append(item: PlaybackItem) {
         currentPlaylist?.items.append(item)
-        currentPlaylist?.totalDuration += item.audioData.duration
+        currentPlaylist?.totalDuration += safeDuration(item.audioData.duration)
+        if let playlist = currentPlaylist {
+            progress = PlaybackProgress(
+                currentTime: progress.currentTime,
+                duration: max(progress.currentTime, safeDuration(playlist.totalDuration)),
+                currentItemIndex: playlist.currentIndex,
+                totalItems: playlist.items.count
+            )
+        }
         print("➕ 追加播放项: 第 \(item.order + 1) 段")
 
         if isStreamingPlaybackPending,

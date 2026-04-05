@@ -7,29 +7,40 @@
 
 import Foundation
 
-/// 按 `segmentIndex` 顺序依次调用 `onItemReady`（并发完成时仍保证播放顺序）。
-private final class OrderedPlaybackEmitter: @unchecked Sendable {
-    private let lock = NSLock()
+/// 按 `segmentIndex` 顺序依次发出已完成的播放项（并发完成时仍保证播放顺序）。
+private actor OrderedPlaybackEmitter {
     private var pending: [Int: PlaybackItem] = [:]
     private var nextEmit = 0
-    private let onItemReady: (PlaybackItem) -> Void
 
-    init(onItemReady: @escaping (PlaybackItem) -> Void) {
-        self.onItemReady = onItemReady
-    }
-
-    func complete(segmentIndex: Int, item: PlaybackItem) {
+    func enqueue(segmentIndex: Int, item: PlaybackItem) -> [PlaybackItem] {
         var batch: [PlaybackItem] = []
-        lock.lock()
         pending[segmentIndex] = item
         while let next = pending[nextEmit] {
             pending.removeValue(forKey: nextEmit)
             batch.append(next)
             nextEmit += 1
         }
-        lock.unlock()
-        for x in batch {
-            onItemReady(x)
+        return batch
+    }
+}
+
+/// 收集并发生成结果，避免在异步上下文中使用 `NSLock`。
+private actor PlaybackBuildCollector {
+    private var itemsByIndex: [Int: PlaybackItem] = [:]
+    private var finishedCount = 0
+
+    func store(_ item: PlaybackItem, at index: Int) -> Int {
+        itemsByIndex[index] = item
+        finishedCount += 1
+        return finishedCount
+    }
+
+    func orderedItems(totalSegments: Int) throws -> [PlaybackItem] {
+        try (0..<totalSegments).map { idx in
+            guard let item = itemsByIndex[idx] else {
+                throw TTSError.apiError("分段 \(idx + 1) 合成结果缺失")
+            }
+            return item
         }
     }
 }
@@ -73,8 +84,12 @@ public class AudioBookGenerator {
         ttsApiKey: String,
         ttsProvider: TTSProvider = .azure
     ) {
-        // 当前仅保留通义千问作为文本分析服务，避免 provider 配置漂移。
-        let aiService: AIAnalysisService = QwenAnalysisService(apiKey: aiApiKey)
+        let aiService = Self.makeAnalysisService(
+            provider: Config.aiProvider,
+            apiKey: aiApiKey,
+            model: Config.aiModel,
+            baseURL: Config.aiBaseURL
+        )
 
         // 创建文本分析器
         let textAnalyzer = NovelTextAnalyzer(aiService: aiService)
@@ -106,6 +121,33 @@ public class AudioBookGenerator {
             config: genConfig,
             ttsProvider: ttsProvider
         )
+    }
+
+    private static func makeAnalysisService(
+        provider: AIProvider,
+        apiKey: String,
+        model: String,
+        baseURL: String?
+    ) -> AIAnalysisService {
+        let primary: AIAnalysisService
+        switch provider {
+        case .kimi:
+            primary = KimiAnalysisService(
+                apiKey: apiKey,
+                model: model,
+                baseURL: baseURL ?? "https://api.moonshot.cn/v1"
+            )
+        case .qwen:
+            primary = QwenAnalysisService(
+                apiKey: apiKey,
+                model: model,
+                baseURL: baseURL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+        case .local:
+            return LocalRuleAnalysisService()
+        }
+
+        return ResilientAnalysisService(primary: primary)
     }
 
     // MARK: - Public Methods
@@ -189,13 +231,9 @@ public class AudioBookGenerator {
         }
         let maxParallel = max(1, min(config.maxConcurrentTasks, max(1, totalSegments)))
         let orderedEmitter: OrderedPlaybackEmitter? = (streamItemsAsReady && onItemReady != nil)
-            ? OrderedPlaybackEmitter(onItemReady: { onItemReady?($0) })
+            ? OrderedPlaybackEmitter()
             : nil
-
-        var byIndex: [Int: PlaybackItem] = [:]
-        let indexLock = NSLock()
-        var finishedCount = 0
-        let countLock = NSLock()
+        let collector = PlaybackBuildCollector()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             var nextScheduled = 0
@@ -208,14 +246,11 @@ public class AudioBookGenerator {
                         segment: segment,
                         voiceAssignments: voiceAssignments
                     )
-                    indexLock.lock()
-                    byIndex[i] = item
-                    indexLock.unlock()
-                    orderedEmitter?.complete(segmentIndex: i, item: item)
-                    countLock.lock()
-                    finishedCount += 1
-                    let fc = finishedCount
-                    countLock.unlock()
+                    let emittedBatch = await orderedEmitter?.enqueue(segmentIndex: i, item: item) ?? []
+                    for readyItem in emittedBatch {
+                        onItemReady?(readyItem)
+                    }
+                    let fc = await collector.store(item, at: i)
                     let progress = 0.1 + (Double(fc) / Double(totalSegments)) * 0.9
                     progressHandler?(GenerationProgress(
                         stage: .synthesizing,
@@ -239,12 +274,7 @@ public class AudioBookGenerator {
             }
         }
 
-        let playbackItems = try (0..<totalSegments).map { idx -> PlaybackItem in
-            guard let item = byIndex[idx] else {
-                throw TTSError.apiError("分段 \(idx + 1) 合成结果缺失")
-            }
-            return item
-        }
+        let playbackItems = try await collector.orderedItems(totalSegments: totalSegments)
 
         // 4. 创建播放列表
         let playlist = Playlist(
@@ -409,8 +439,10 @@ struct GeneratorConfig {
 
 // MARK: - AI 提供商
 
-public enum AIProvider {
+public enum AIProvider: String, Codable, Sendable {
+    case kimi
     case qwen
+    case local
 }
 
 // MARK: - 生成进度
