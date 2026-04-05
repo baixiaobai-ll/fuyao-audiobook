@@ -12,6 +12,28 @@ private enum BookChapterPlaybackError: LocalizedError {
     }
 }
 
+private actor UpcomingChapterWarmupRegistry {
+    static let shared = UpcomingChapterWarmupRegistry()
+
+    private var inFlightKeys: Set<String> = []
+    private var completedKeys: Set<String> = []
+
+    func shouldStart(key: String) -> Bool {
+        guard !inFlightKeys.contains(key), !completedKeys.contains(key) else {
+            return false
+        }
+        inFlightKeys.insert(key)
+        return true
+    }
+
+    func finish(key: String, completed: Bool) {
+        inFlightKeys.remove(key)
+        if completed {
+            completedKeys.insert(key)
+        }
+    }
+}
+
 @MainActor
 enum BookChapterPlayback {
     static func fetchContent(shelfBookId: UUID, book: Book, chapter: Chapter) async throws -> String {
@@ -72,6 +94,34 @@ enum BookChapterPlayback {
             author: shelfBook.author,
             chapterTitle: chapter.title,
             wordCount: content.count
+        )
+
+        let sortedChapters = allChapters.sorted { $0.index < $1.index }
+        let nextChapter = nextChapter(after: chapter.index, in: sortedChapters)
+        player.configureChapterPlaybackHandlers(
+            prefetch: nextChapter.map { upcoming in
+                {
+                    await preloadUpcomingChapter(
+                        shelfBook: shelfBook,
+                        chapter: upcoming,
+                        store: store
+                    )
+                }
+            },
+            advance: nextChapter.map { upcoming in
+                { [weak player] in
+                    guard let player else { return }
+                    try await BookChapterPlayback.play(
+                        shelfBook: shelfBook,
+                        chapter: upcoming,
+                        allChapters: sortedChapters,
+                        store: store,
+                        player: player,
+                        onProgressMessage: { _ in },
+                        onFirstPlaybackStarted: {}
+                    )
+                }
+            }
         )
 
         final class StartedFlag {
@@ -194,6 +244,82 @@ enum BookChapterPlayback {
         }
 
         store.updateLastRead(bookId: shelfBook.id, chapterIndex: chapter.index)
+    }
+
+    private static func nextChapter(after currentIndex: Int, in chapters: [Chapter]) -> Chapter? {
+        let sorted = chapters.sorted { $0.index < $1.index }
+        guard let currentPosition = sorted.firstIndex(where: { $0.index == currentIndex }),
+              currentPosition + 1 < sorted.count else {
+            return nil
+        }
+        return sorted[currentPosition + 1]
+    }
+
+    private static func preloadUpcomingChapter(
+        shelfBook: Book,
+        chapter: Chapter,
+        store: BookshelfStore
+    ) async {
+        let warmupKey = "\(shelfBook.id.uuidString):\(chapter.index)"
+        guard await UpcomingChapterWarmupRegistry.shared.shouldStart(key: warmupKey) else {
+            return
+        }
+        var didCompleteWarmup = false
+        defer {
+            Task {
+                await UpcomingChapterWarmupRegistry.shared.finish(
+                    key: warmupKey,
+                    completed: didCompleteWarmup
+                )
+            }
+        }
+
+        do {
+            let content = try await fetchContent(shelfBookId: shelfBook.id, book: shelfBook, chapter: chapter)
+            let normalized = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return }
+
+            let playbackChunks = splitContentForPlayback(
+                normalized,
+                maxChars: Config.chapterTTSDisplayMaxChars
+            )
+            let warmupText = playbackChunks.first ?? normalized
+            let metadata = NovelMetadata(
+                title: shelfBook.title,
+                author: shelfBook.author,
+                chapterTitle: chapter.title,
+                wordCount: normalized.count
+            )
+            let generator = AudioBookGenerator(
+                aiApiKey: Config.aiApiKey,
+                ttsApiKey: Config.ttsApiKey,
+                ttsProvider: Config.ttsProvider
+            )
+            let existingBindings = store.books.first(where: { $0.id == shelfBook.id })?.voiceBindings ?? [:]
+            let remoteCacheKey: PlaybackRemoteCacheKey? = {
+                guard shelfBook.source == .biquge,
+                      let bid = shelfBook.bookId,
+                      !bid.isEmpty else { return nil }
+                return PlaybackRemoteCacheKey(bookId: bid, chapterIndex: chapter.index * 1000)
+            }()
+
+            try await generator.warmupUpcomingChapterPlayback(
+                text: warmupText,
+                metadata: metadata,
+                existingVoiceBindings: existingBindings,
+                remoteCacheKey: remoteCacheKey,
+                prefetchSegmentCount: 3,
+                onVoiceBindingsUpdated: { newBindings in
+                    Task { @MainActor in
+                        store.updateVoiceBindings(bookId: shelfBook.id, bindings: newBindings)
+                    }
+                }
+            )
+            didCompleteWarmup = true
+            print("⚡️ 已预热下一章播放链路: 第 \(chapter.index + 1) 章")
+        } catch {
+            print("⚠️ 下一章预加载失败: \(error.localizedDescription)")
+        }
     }
 
     private static func splitContentForPlayback(_ content: String, maxChars: Int) -> [String] {

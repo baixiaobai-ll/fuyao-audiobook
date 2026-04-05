@@ -32,6 +32,13 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         let message: String
     }
 
+    private struct XfyunSynthesisTuning {
+        let speed: Int
+        let pitch: Int
+        let volume: Int
+        let oralLevel: String
+    }
+
     private let config: TTSConfig
     private let ssmlGenerator: SSMLGenerator
     private let voiceManager: VoiceManager
@@ -79,7 +86,7 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         case .aliyun:
             audioData = try await synthesizeWithAliyun(ssml: ssml, voice: voice)
         case .xfyun:
-            audioData = try await synthesizeWithXfyunSuper(text: segment.text, voice: voice)
+            audioData = try await synthesizeWithXfyunSuper(segment: segment, voice: voice)
         case .local:
             throw TTSError.unsupportedProvider
         }
@@ -325,6 +332,23 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
     }
 
     /// 科大讯飞超拟人 TTS (WebSocket)
+    private func synthesizeWithXfyunSuper(segment: TextSegment, voice: Voice) async throws -> AudioData {
+        let tuning = makeXfyunTuning(for: segment)
+        return try await performRetriedOperation(
+            label: "讯飞超拟人 TTS",
+            shouldRetry: { [weak self] error in
+                guard let self else { return false }
+                if Self.isRetryableTransportError(error) {
+                    return true
+                }
+                let message = self.errorMessage(for: error)
+                return self.isRetryableXfyunConnectionError(message)
+            }
+        ) {
+            try await synthesizeWithXfyunSuperAttempt(text: segment.text, voice: voice, tuning: tuning)
+        }
+    }
+
     private func synthesizeWithXfyunSuper(text: String, voice: Voice) async throws -> AudioData {
         try await performRetriedOperation(
             label: "讯飞超拟人 TTS",
@@ -337,11 +361,19 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                 return self.isRetryableXfyunConnectionError(message)
             }
         ) {
-            try await synthesizeWithXfyunSuperAttempt(text: text, voice: voice)
+            try await synthesizeWithXfyunSuperAttempt(
+                text: text,
+                voice: voice,
+                tuning: defaultXfyunTuning()
+            )
         }
     }
 
-    private func synthesizeWithXfyunSuperAttempt(text: String, voice: Voice) async throws -> AudioData {
+    private func synthesizeWithXfyunSuperAttempt(
+        text: String,
+        voice: Voice,
+        tuning: XfyunSynthesisTuning
+    ) async throws -> AudioData {
         let components = config.apiKey.components(separatedBy: ":")
         guard components.count == 3 else { throw TTSError.invalidConfiguration }
         let appId = components[0]
@@ -402,13 +434,13 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                 ],
                 "parameter": [
                     "oral": [
-                        "oral_level": "mid"
+                        "oral_level": tuning.oralLevel
                     ],
                     "tts": [
                         "vcn": vcn,
-                        "speed": 50,
-                        "volume": 50,
-                        "pitch": 50,
+                        "speed": tuning.speed,
+                        "volume": tuning.volume,
+                        "pitch": tuning.pitch,
                         "audio": [
                             "encoding": "lame",
                             "sample_rate": 24000,
@@ -676,7 +708,10 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         let content = [
             config.provider.rawValue,
             segment.text,
+            segment.type.rawValue,
             segment.emotion.rawValue,
+            segment.scene.type.rawValue,
+            String(format: "%.2f", segment.scene.intensity),
             voice.provider.rawValue,
             voice.id
         ].joined(separator: "|")
@@ -728,6 +763,69 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         #else
         return nil
         #endif
+    }
+
+    private func defaultXfyunTuning() -> XfyunSynthesisTuning {
+        XfyunSynthesisTuning(speed: 50, pitch: 50, volume: 50, oralLevel: "mid")
+    }
+
+    private func makeXfyunTuning(for segment: TextSegment) -> XfyunSynthesisTuning {
+        var speed = Int((segment.emotion.prosodyAdjustment.rate - 1.0) * 34) + 50
+        var pitch = Int((segment.emotion.prosodyAdjustment.pitch - 1.0) * 42) + 50
+        var volume = Int((segment.emotion.prosodyAdjustment.volume - 1.0) * 30) + 50
+
+        let intensityScale = 0.65 + (segment.scene.intensity * 0.9)
+        func applyScene(speed deltaSpeed: Int, pitch deltaPitch: Int, volume deltaVolume: Int) {
+            speed += Int(Double(deltaSpeed) * intensityScale)
+            pitch += Int(Double(deltaPitch) * intensityScale)
+            volume += Int(Double(deltaVolume) * intensityScale)
+        }
+
+        switch segment.scene.type {
+        case .battle:
+            applyScene(speed: 8, pitch: 4, volume: 6)
+        case .tense:
+            applyScene(speed: 4, pitch: 2, volume: 3)
+        case .romantic:
+            applyScene(speed: -4, pitch: 1, volume: 0)
+        case .mysterious:
+            applyScene(speed: -6, pitch: -3, volume: -2)
+        case .sad:
+            applyScene(speed: -8, pitch: -5, volume: -4)
+        case .festive:
+            applyScene(speed: 6, pitch: 3, volume: 5)
+        case .peaceful:
+            break
+        }
+
+        switch segment.type {
+        case .thought:
+            speed -= 5
+            volume -= 8
+        case .description:
+            speed -= 3
+        case .narration:
+            speed -= 1
+        case .dialogue:
+            break
+        }
+
+        let oralLevel: String
+        switch (segment.emotion, segment.scene.type, segment.type) {
+        case (.excited, _, _), (.angry, _, _), (_, .battle, _), (_, .festive, _):
+            oralLevel = "high"
+        case (.sad, _, _), (.tender, _, _), (_, .mysterious, _), (_, _, .thought):
+            oralLevel = "low"
+        default:
+            oralLevel = "mid"
+        }
+
+        return XfyunSynthesisTuning(
+            speed: min(max(speed, 20), 80),
+            pitch: min(max(pitch, 20), 80),
+            volume: min(max(volume, 15), 80),
+            oralLevel: oralLevel
+        )
     }
 }
 
