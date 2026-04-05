@@ -14,21 +14,20 @@ struct Config {
 
     /// AI 分析 API 密钥
     static var aiApiKey: String {
-        // 优先从环境变量读取
-        if let key = ProcessInfo.processInfo.environment["AI_API_KEY"], !key.isEmpty {
-            return key
+        if aiProvider == .local {
+            return ""
         }
 
-        // 从 Keychain 读取
-        if let key = KeychainManager.load(key: "AI_API_KEY"), !key.isEmpty {
+        let keys = aiProviderConfigKeys(for: aiProvider)
+        if let key = loadFirstNonEmptyValue(fromEnvironmentKeys: keys) {
             return key
         }
-
-        // 从配置文件读取
-        if let key = loadFromPlist(key: "AI_API_KEY"), !key.isEmpty {
+        if let key = loadFirstNonEmptyValue(fromKeychainKeys: keys) {
             return key
         }
-
+        if let key = loadFirstNonEmptyValue(fromPlistKeys: keys) {
+            return key
+        }
         fatalError("❌ AI API Key 未配置！请参考 Docs/API密钥配置.md")
     }
 
@@ -53,7 +52,48 @@ struct Config {
 
     /// AI 服务提供商
     static var aiProvider: AIProvider {
-        .qwen
+        let providerString = ProcessInfo.processInfo.environment["AI_PROVIDER"]
+            ?? loadFromPlist(key: "AI_PROVIDER")
+            ?? "kimi"
+        return AIProvider(rawValue: providerString) ?? .kimi
+    }
+
+    /// AI 模型名称
+    static var aiModel: String {
+        if let model = ProcessInfo.processInfo.environment["AI_MODEL"], !model.isEmpty {
+            return model
+        }
+        if let model = loadFromPlist(key: "AI_MODEL"), !model.isEmpty {
+            return model
+        }
+
+        switch aiProvider {
+        case .kimi:
+            return "kimi-k2-0905-preview"
+        case .qwen:
+            return "qwen-plus"
+        case .local:
+            return "local-rules"
+        }
+    }
+
+    /// AI 基础地址
+    static var aiBaseURL: String? {
+        if let url = ProcessInfo.processInfo.environment["AI_BASE_URL"], !url.isEmpty {
+            return url
+        }
+        if let url = loadFromPlist(key: "AI_BASE_URL"), !url.isEmpty {
+            return url
+        }
+
+        switch aiProvider {
+        case .kimi:
+            return "https://api.moonshot.cn/v1"
+        case .qwen:
+            return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        case .local:
+            return nil
+        }
     }
 
     /// TTS 服务提供商
@@ -172,6 +212,22 @@ struct Config {
         return 0.18
     }
 
+    static var hasConfiguredAIAPIKey: Bool {
+        if aiProvider == .local {
+            return true
+        }
+        let keys = aiProviderConfigKeys(for: aiProvider)
+        return loadFirstNonEmptyValue(fromEnvironmentKeys: keys) != nil
+            || loadFirstNonEmptyValue(fromKeychainKeys: keys) != nil
+            || loadFirstNonEmptyValue(fromPlistKeys: keys) != nil
+    }
+
+    static var hasConfiguredTTSAPIKey: Bool {
+        loadFirstNonEmptyValue(fromEnvironmentKeys: ["TTS_API_KEY"]) != nil
+            || loadFirstNonEmptyValue(fromKeychainKeys: ["TTS_API_KEY"]) != nil
+            || loadFirstNonEmptyValue(fromPlistKeys: ["TTS_API_KEY"]) != nil
+    }
+
     // MARK: - Private Methods
 
     /// 从 Plist 文件读取配置
@@ -182,6 +238,44 @@ struct Config {
         }
 
         return config[key] as? String
+    }
+
+    private static func loadFirstNonEmptyValue(fromEnvironmentKeys keys: [String]) -> String? {
+        for key in keys {
+            if let value = ProcessInfo.processInfo.environment[key], !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func loadFirstNonEmptyValue(fromKeychainKeys keys: [String]) -> String? {
+        for key in keys {
+            if let value = KeychainManager.load(key: key), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func loadFirstNonEmptyValue(fromPlistKeys keys: [String]) -> String? {
+        for key in keys {
+            if let value = loadFromPlist(key: key), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func aiProviderConfigKeys(for provider: AIProvider) -> [String] {
+        switch provider {
+        case .kimi:
+            return ["KIMI_API_KEY", "MOONSHOT_API_KEY", "AI_API_KEY"]
+        case .qwen:
+            return ["QWEN_API_KEY", "DASHSCOPE_API_KEY", "AI_API_KEY"]
+        case .local:
+            return ["AI_API_KEY"]
+        }
     }
 }
 
@@ -338,18 +432,16 @@ class ConfigHelper {
         var isValid = true
 
         // 检查 API 密钥
-        do {
-            _ = Config.aiApiKey
+        if Config.hasConfiguredAIAPIKey {
             print("✅ AI API Key 已配置")
-        } catch {
+        } else {
             print("❌ AI API Key 未配置")
             isValid = false
         }
 
-        do {
-            _ = Config.ttsApiKey
+        if Config.hasConfiguredTTSAPIKey {
             print("✅ TTS API Key 已配置")
-        } catch {
+        } else {
             print("❌ TTS API Key 未配置")
             isValid = false
         }
@@ -364,6 +456,8 @@ class ConfigHelper {
         print("   构建: \(Config.buildVersion)")
         print("   调试模式: \(Config.isDebug)")
         print("   AI 提供商: \(Config.aiProvider)")
+        print("   AI 模型: \(Config.aiModel)")
+        print("   AI 基础地址: \(Config.aiBaseURL ?? "local")")
         print("   TTS 提供商: \(Config.ttsProvider)")
         print("   Azure 区域: \(Config.azureRegion)")
         print("   背景音乐: \(Config.enableBackgroundMusic)")

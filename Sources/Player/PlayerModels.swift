@@ -104,7 +104,11 @@ public struct Playlist: Codable, Identifiable {
         self.items = items
         self.currentIndex = currentIndex
         self.chapterContext = chapterContext
-        self.totalDuration = items.reduce(0) { $0 + $1.audioData.duration }
+        self.totalDuration = items.reduce(0) { partial, item in
+            let duration = item.audioData.duration
+            guard duration.isFinite && duration > 0 else { return partial }
+            return partial + duration
+        }
     }
 
     /// 当前播放项
