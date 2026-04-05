@@ -26,7 +26,10 @@ final class FuyaoLiveActivityManager {
     }
 
     func sync(with state: FuyaoPlaybackLiveState?) {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            end()
+            return
+        }
 
         guard let state else {
             end()
@@ -34,10 +37,15 @@ final class FuyaoLiveActivityManager {
         }
 
         let now = Date().timeIntervalSince1970
-        let shouldThrottle = lastState?.bookTitle == state.bookTitle
-            && lastState?.chapterTitle == state.chapterTitle
-            && lastState?.isPlaying == state.isPlaying
-            && (now - lastUpdateTime) < 5
+        let previousState = lastState
+        let minimumUpdateInterval = state.isPlaying ? 1.5 : 8.0
+        let shouldThrottle = previousState?.playlistID == state.playlistID
+            && previousState?.bookTitle == state.bookTitle
+            && previousState?.chapterTitle == state.chapterTitle
+            && previousState?.isPlaying == state.isPlaying
+            && abs((previousState?.elapsedTime ?? 0) - state.elapsedTime) < 1
+            && abs((previousState?.duration ?? 0) - state.duration) < 1
+            && (now - lastUpdateTime) < minimumUpdateInterval
 
         if shouldThrottle {
             return
