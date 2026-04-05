@@ -22,7 +22,7 @@ struct SurfaceCard<Content: View>: View {
                         LinearGradient(
                             colors: [
                                 Color(red: 0.94, green: 0.97, blue: 1.0).opacity(0.58),
-                                Color(red: 0.98, green: 0.93, blue: 0.88).opacity(0.18),
+                                Color(red: 0.86, green: 0.84, blue: 1.0).opacity(0.18),
                                 Color.white.opacity(0.10)
                             ],
                             startPoint: .topLeading,
@@ -191,6 +191,60 @@ struct GradientButton: View {
                 .background(AppTheme.Colors.brandGradient)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.CornerRadius.medium))
                 .elevatedShadow()
+        }
+    }
+}
+
+// MARK: - Tinted Icon Badge
+
+struct TintedIconBadge: View {
+    let icon: String
+    var size: CGFloat = 36
+    var iconSize: CGFloat = 15
+    var primary: Color = AppTheme.Colors.brandPrimary
+    var secondary: Color = AppTheme.Colors.brandAccent
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [primary, secondary],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    Circle()
+                        .fill(Color.white.opacity(0.18))
+                        .padding(1.5)
+                )
+
+            Image(systemName: icon)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        .shadow(color: secondary.opacity(0.18), radius: 10, x: 0, y: 4)
+    }
+}
+
+// MARK: - Soft Section Header
+
+struct SoftSectionHeader: View {
+    let title: String
+    var subtitle: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
         }
     }
 }

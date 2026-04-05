@@ -551,33 +551,17 @@ struct BookCard: View {
     let book: Book
     var isEditing: Bool = false
     @State private var wiggle = false
+    private let progressBlue = Color(red: 0.49, green: 0.72, blue: 0.97)
+    private let progressPurple = Color(red: 0.66, green: 0.54, blue: 0.95)
+    private let progressIndigo = Color(red: 0.38, green: 0.46, blue: 0.84)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ZStack(alignment: .topLeading) {
-                BookCoverView(
-                    coverURL: book.coverURL,
-                    title: book.title,
-                    size: CGSize(width: 116, height: 158)
-                )
-
-                CapsuleInfoTag(
-                    title: book.source == .local ? "本地" : "在线",
-                    icon: book.source == .local ? "internaldrive" : "network",
-                    tint: book.source == .local ? AppTheme.Colors.brandAccent : AppTheme.Colors.brandPrimary
-                )
-                .padding(8)
-
-                if hasStartedPlayback {
-                    CapsuleInfoTag(
-                        title: "继续",
-                        icon: "headphones",
-                        tint: AppTheme.Colors.brandPrimary
-                    )
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                }
-            }
+            BookCoverView(
+                coverURL: book.coverURL,
+                title: book.title,
+                size: CGSize(width: 116, height: 158)
+            )
             .frame(maxWidth: .infinity)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -596,7 +580,13 @@ struct BookCard: View {
                 HStack(spacing: 6) {
                     Image(systemName: progressIconName)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.brandPrimary)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [progressBlue, progressPurple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
                     Text(progressText)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(AppTheme.Colors.textSecondary)
@@ -606,13 +596,24 @@ struct BookCard: View {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.52))
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        progressBlue.opacity(0.14),
+                                        progressPurple.opacity(0.14),
+                                        Color.white.opacity(0.30)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
                         Capsule(style: .continuous)
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        AppTheme.Colors.brandPrimary.opacity(0.88),
-                                        AppTheme.Colors.brandAccent.opacity(0.72)
+                                        progressBlue.opacity(0.92),
+                                        progressPurple.opacity(0.84),
+                                        progressIndigo.opacity(0.78)
                                     ],
                                     startPoint: .leading,
                                     endPoint: .trailing

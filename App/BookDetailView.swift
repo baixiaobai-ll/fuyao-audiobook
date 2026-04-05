@@ -82,7 +82,7 @@ struct BookDetailView: View {
     }
 
     private var sourceBadgeTitle: String {
-        book.source == .local ? "本地导入" : "笔趣阁"
+        book.source == .local ? "本地导入" : "公开来源"
     }
 
     private var chapterSectionHint: String {
