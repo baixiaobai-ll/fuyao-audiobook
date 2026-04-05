@@ -34,6 +34,13 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private let sessionManager: PlaybackSessionManager
     private var lastNowPlayingInfoUpdate: TimeInterval = 0
     private var isStreamingPlaybackPending = false
+    private var pendingRestoredLocalTime: TimeInterval = 0
+    private var pendingRestoredItemIndex: Int?
+    private var lastSessionSaveTime: TimeInterval = 0
+    private var chapterPrefetchHandler: (() async -> Void)?
+    private var chapterAdvanceHandler: (() async throws -> Void)?
+    private var hasTriggeredChapterPrefetch = false
+    private var isAdvancingToNextChapter = false
 
     // MARK: - Initialization
 
@@ -44,6 +51,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         setupAudioSession()
         setupNotifications()
+        restorePersistedPlaybackState()
     }
 
     deinit {
@@ -56,18 +64,30 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     public func load(playlist: Playlist) {
         currentPlaylist = playlist
         state = .idle
+        hasTriggeredChapterPrefetch = false
+        isAdvancingToNextChapter = false
         var restoredTime: TimeInterval = 0
+        var restoredItemIndex = playlist.currentIndex
 
         // 尝试恢复上次播放位置
-        if let session = sessionManager.loadSession(for: playlist.id) {
-            currentPlaylist?.currentIndex = session.currentItemIndex
+        if let session = sessionManager.loadSession(for: playlist) {
+            let clampedIndex = min(max(session.currentItemIndex, 0), max(playlist.items.count - 1, 0))
+            currentPlaylist?.currentIndex = clampedIndex
             restoredTime = max(0, session.currentTime)
-            print("📖 恢复播放位置: 第 \(session.currentItemIndex + 1) 项")
+            restoredItemIndex = clampedIndex
+            print("📖 恢复播放位置: 第 \(clampedIndex + 1) 项")
         }
+
+        pendingRestoredLocalTime = restoredTime
+        pendingRestoredItemIndex = restoredTime > 0 ? restoredItemIndex : nil
 
         if let currentPlaylist {
             progress = PlaybackProgress(
-                currentTime: restoredTime,
+                currentTime: aggregatedTime(
+                    in: currentPlaylist,
+                    currentItemIndex: restoredItemIndex,
+                    localTime: restoredTime
+                ),
                 duration: max(0, currentPlaylist.totalDuration),
                 currentItemIndex: currentPlaylist.currentIndex,
                 totalItems: currentPlaylist.items.count
@@ -76,6 +96,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         print("📚 已加载播放列表: \(playlist.title), 共 \(playlist.items.count) 项")
         ChapterPrefetchCoordinator.shared.resetForNewPlayback()
+        persistPlaybackState()
         syncLiveActivity()
     }
 
@@ -102,6 +123,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             return
         }
 
+        persistPlaybackState()
         syncLiveActivity()
     }
 
@@ -119,6 +141,16 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 handlePlaylistEnded()
             }
         }
+    }
+
+    func configureChapterPlaybackHandlers(
+        prefetch: (() async -> Void)?,
+        advance: (() async throws -> Void)?
+    ) {
+        chapterPrefetchHandler = prefetch
+        chapterAdvanceHandler = advance
+        hasTriggeredChapterPrefetch = false
+        isAdvancingToNextChapter = false
     }
 
     /// 播放
@@ -153,13 +185,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
             setupTimeObserver()
             setupPlayerObservers(for: playerItem)
-
-            player?.play()
-            state = .playing
-
-            print("▶️ 开始播放: \(currentItem.segment.text.prefix(20))...")
-            publishNowPlayingInfoCenter()
-            syncLiveActivity()
+            let initialSeekTime = restoredLocalTimeIfNeeded(for: playlist.currentIndex)
+            startPlayback(for: currentItem, initialSeekTime: initialSeekTime)
         } catch {
             state = .error
             print("❌ 播放失败: \(error.localizedDescription)")
@@ -500,6 +527,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                     self.publishNowPlayingInfoCenter()
                     self.syncLiveActivity()
                     print("⏳ 已播到当前缓冲末尾，等待后续音频生成...")
+                } else if self.currentPlaylist?.chapterContext != nil {
+                    self.advanceToNextChapterIfPossible()
                 } else {
                     self.handlePlaylistEnded()
                 }
@@ -583,6 +612,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             ensureAudioSessionActive()
             publishNowPlayingInfoCenter()
         }
+        maybeSaveSessionIfNeeded(force: true)
         #endif
     }
 
@@ -595,6 +625,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     }
 
     @objc private func handleAppWillTerminate() {
+        maybeSaveSessionIfNeeded(force: true)
         #if os(iOS) && canImport(ActivityKit)
         if #available(iOS 16.1, *) {
             Task { @MainActor in
@@ -616,10 +647,12 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
         let session = PlaybackSession(
             playlistId: playlist.id,
+            resumeIdentifier: playlist.resumeIdentifier,
             currentItemIndex: playlist.currentIndex,
             currentTime: localTime
         )
-        sessionManager.saveSession(session)
+        sessionManager.saveSession(session, for: playlist)
+        persistPlaybackState()
     }
 
     /// 清理播放器资源（不改变 state，供 next/previous 使用）
@@ -640,6 +673,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     private func notifyPrefetchAndNowPlaying() {
         if state == .playing {
+            maybeSaveSessionIfNeeded()
+            maybeTriggerUpcomingChapterPrefetch()
             ChapterPrefetchCoordinator.shared.onPlaybackProgress(
                 currentTime: progress.currentTime,
                 duration: progress.duration,
@@ -728,6 +763,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 清理资源
     private func cleanup() {
+        maybeSaveSessionIfNeeded(force: true)
         cleanupPlayer()
         sleepTimer?.invalidate()
         #if os(iOS) && canImport(ActivityKit)
@@ -746,6 +782,222 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     /// 获取音频缓存目录 URL
     var audioCacheDirectory: URL {
         cacheManager.cacheDirectory
+    }
+
+    private func startPlayback(for item: PlaybackItem, initialSeekTime: TimeInterval) {
+        let beginPlayback = { [weak self] in
+            guard let self else { return }
+            self.player?.play()
+            self.player?.rate = self.config.playbackRate
+            self.state = .playing
+            self.publishNowPlayingInfoCenter()
+            self.syncLiveActivity()
+            print("▶️ 开始播放: \(item.segment.text.prefix(20))...")
+        }
+
+        guard initialSeekTime > 0 else {
+            beginPlayback()
+            return
+        }
+
+        let cmTime = CMTime(seconds: initialSeekTime, preferredTimescale: 600)
+        player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
+            guard let self else { return }
+            if !completed {
+                self.pendingRestoredLocalTime = 0
+                self.pendingRestoredItemIndex = nil
+                beginPlayback()
+                return
+            }
+            self.pendingRestoredLocalTime = 0
+            self.pendingRestoredItemIndex = nil
+            self.updateProgress()
+            beginPlayback()
+        }
+    }
+
+    private func restoredLocalTimeIfNeeded(for itemIndex: Int) -> TimeInterval {
+        guard pendingRestoredItemIndex == itemIndex else { return 0 }
+        return max(0, pendingRestoredLocalTime)
+    }
+
+    private func maybeSaveSessionIfNeeded(force: Bool = false) {
+        guard currentPlaylist != nil, state == .playing || state == .paused else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastSessionSaveTime >= 12 else { return }
+        lastSessionSaveTime = now
+        saveSession()
+    }
+
+    private func maybeTriggerUpcomingChapterPrefetch() {
+        guard !hasTriggeredChapterPrefetch,
+              let playlist = currentPlaylist,
+              playlist.chapterContext != nil,
+              progress.duration > 0,
+              chapterPrefetchHandler != nil else {
+            return
+        }
+
+        let segEst = max(playlist.items.count, 4)
+        let threshold = PlaybackGenerationPacing.suggestedChapterPrefetchProgressThreshold(
+            estimatedSegmentCount: segEst,
+            concurrent: Config.maxConcurrentTasks,
+            baseThreshold: Config.chapterPrefetchProgressThreshold
+        )
+        guard progress.currentTime / progress.duration >= threshold else { return }
+
+        hasTriggeredChapterPrefetch = true
+        Task { @MainActor [weak self] in
+            guard let handler = self?.chapterPrefetchHandler else { return }
+            await handler()
+        }
+    }
+
+    private func advanceToNextChapterIfPossible() {
+        guard !isAdvancingToNextChapter,
+              let handler = chapterAdvanceHandler else {
+            handlePlaylistEnded()
+            return
+        }
+
+        isAdvancingToNextChapter = true
+        cleanupPlayer()
+        state = .loading
+        publishNowPlayingInfoCenter()
+        syncLiveActivity()
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await handler()
+            } catch {
+                self.isAdvancingToNextChapter = false
+                self.state = .error
+                self.publishNowPlayingInfoCenter()
+                self.syncLiveActivity()
+                print("❌ 自动切换下一章失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func aggregatedTime(
+        in playlist: Playlist,
+        currentItemIndex: Int,
+        localTime: TimeInterval
+    ) -> TimeInterval {
+        guard !playlist.items.isEmpty else { return max(0, localTime) }
+        var totalBefore: TimeInterval = 0
+        for index in 0..<min(currentItemIndex, playlist.items.count) {
+            totalBefore += safeDuration(playlist.items[index].audioData.duration)
+        }
+        return totalBefore + max(0, localTime)
+    }
+
+    private func persistPlaybackState() {
+        guard let playlist = currentPlaylist else { return }
+        do {
+            let items = try playlist.items.map { item -> PersistedPlaybackItem in
+                let url = try cacheManager.getOrCache(audioData: item.audioData, id: item.id.uuidString)
+                return PersistedPlaybackItem(
+                    id: item.id,
+                    segment: item.segment,
+                    order: item.order,
+                    format: item.audioData.format,
+                    duration: item.audioData.duration,
+                    sampleRate: item.audioData.sampleRate,
+                    cachedFileName: url.lastPathComponent
+                )
+            }
+
+            let snapshot = PersistedPlaybackSnapshot(
+                playlistID: playlist.id,
+                title: playlist.title,
+                currentIndex: playlist.currentIndex,
+                chapterContext: playlist.chapterContext,
+                items: items,
+                state: state == .playing ? .paused : state,
+                config: config
+            )
+
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(snapshot)
+            try data.write(to: persistedPlaybackSnapshotURL(), options: .atomic)
+        } catch {
+            print("⚠️ 保存播放快照失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func restorePersistedPlaybackState() {
+        let url = persistedPlaybackSnapshotURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let snapshot = try decoder.decode(PersistedPlaybackSnapshot.self, from: data)
+            let items = try snapshot.items.map { persisted in
+                let audioURL = cacheManager.cachedAudioURL(fileName: persisted.cachedFileName)
+                let audioData = try Data(contentsOf: audioURL)
+                return PlaybackItem(
+                    id: persisted.id,
+                    segment: persisted.segment,
+                    audioData: AudioData(
+                        data: audioData,
+                        format: persisted.format,
+                        duration: persisted.duration,
+                        sampleRate: persisted.sampleRate
+                    ),
+                    order: persisted.order
+                )
+            }
+
+            guard !items.isEmpty else { return }
+            let restoredPlaylist = Playlist(
+                id: snapshot.playlistID,
+                title: snapshot.title,
+                items: items,
+                currentIndex: min(max(snapshot.currentIndex, 0), items.count - 1),
+                chapterContext: snapshot.chapterContext
+            )
+
+            currentPlaylist = restoredPlaylist
+            config = snapshot.config
+            state = snapshot.state == .playing ? .paused : snapshot.state
+
+            if let session = sessionManager.loadSession(for: restoredPlaylist) {
+                let clampedIndex = min(max(session.currentItemIndex, 0), items.count - 1)
+                currentPlaylist?.currentIndex = clampedIndex
+                let restoredTime = max(0, session.currentTime)
+                pendingRestoredLocalTime = restoredTime
+                pendingRestoredItemIndex = restoredTime > 0 ? clampedIndex : nil
+                progress = PlaybackProgress(
+                    currentTime: aggregatedTime(
+                        in: restoredPlaylist,
+                        currentItemIndex: clampedIndex,
+                        localTime: restoredTime
+                    ),
+                    duration: max(0, restoredPlaylist.totalDuration),
+                    currentItemIndex: clampedIndex,
+                    totalItems: restoredPlaylist.items.count
+                )
+            } else {
+                progress = PlaybackProgress(
+                    currentTime: 0,
+                    duration: max(0, restoredPlaylist.totalDuration),
+                    currentItemIndex: restoredPlaylist.currentIndex,
+                    totalItems: restoredPlaylist.items.count
+                )
+            }
+
+            print("📚 已恢复上次播放快照: \(restoredPlaylist.title)")
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            print("⚠️ 恢复播放快照失败，已清理损坏快照: \(error.localizedDescription)")
+        }
+    }
+
+    private func persistedPlaybackSnapshotURL() -> URL {
+        cacheManager.cacheDirectory.appendingPathComponent("last-playback-snapshot.json")
     }
 }
 
@@ -777,11 +1029,35 @@ class AudioCacheManager {
         return fileURL
     }
 
+    func cachedAudioURL(fileName: String) -> URL {
+        cacheDirectory.appendingPathComponent(fileName)
+    }
+
     /// 清除缓存
     func clearCache() {
         try? fileManager.removeItem(at: cacheDirectory)
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
+}
+
+private struct PersistedPlaybackSnapshot: Codable {
+    let playlistID: UUID
+    let title: String
+    let currentIndex: Int
+    let chapterContext: PlaybackChapterContext?
+    let items: [PersistedPlaybackItem]
+    let state: PlaybackState
+    let config: PlaybackConfig
+}
+
+private struct PersistedPlaybackItem: Codable {
+    let id: UUID
+    let segment: TextSegment
+    let order: Int
+    let format: AudioData.AudioFormat
+    let duration: TimeInterval
+    let sampleRate: Int
+    let cachedFileName: String
 }
 
 // MARK: - 播放会话管理器
@@ -793,22 +1069,26 @@ class PlaybackSessionManager {
     private let sessionKey = "PlaybackSessions"
 
     /// 保存会话
-    func saveSession(_ session: PlaybackSession) {
+    func saveSession(_ session: PlaybackSession, for playlist: Playlist) {
         var sessions = loadAllSessions()
-        sessions[session.playlistId.uuidString] = session
+        sessions[playlist.resumeIdentifier] = session
         saveSessions(sessions)
     }
 
     /// 加载会话
-    func loadSession(for playlistId: UUID) -> PlaybackSession? {
+    func loadSession(for playlist: Playlist) -> PlaybackSession? {
         let sessions = loadAllSessions()
-        return sessions[playlistId.uuidString]
+        if let session = sessions[playlist.resumeIdentifier] {
+            return session
+        }
+        return sessions["playlist:\(playlist.id.uuidString)"]
     }
 
     /// 删除会话
-    func deleteSession(for playlistId: UUID) {
+    func deleteSession(for playlist: Playlist) {
         var sessions = loadAllSessions()
-        sessions.removeValue(forKey: playlistId.uuidString)
+        sessions.removeValue(forKey: playlist.resumeIdentifier)
+        sessions.removeValue(forKey: "playlist:\(playlist.id.uuidString)")
         saveSessions(sessions)
     }
 

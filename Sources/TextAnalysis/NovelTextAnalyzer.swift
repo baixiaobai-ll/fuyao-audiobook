@@ -185,6 +185,14 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
         3. 识别场景变化
 
+        **输出约束**：
+        - 必须只输出 JSON，不要输出解释、前后缀、markdown
+        - `type` 只能是 `dialogue|narration|description|thought`
+        - `emotion` 只能是 `neutral|happy|sad|angry|excited|fearful|surprised|tender`
+        - `sceneType` 只能是 `peaceful|tense|battle|romantic|mysterious|sad|festive`
+        - `gender` 只能是 `male|female|neutral|child|elder`
+        - `sceneIntensity` 必须是 0.0 到 1.0 之间的小数
+
         请以 JSON 格式返回，结构如下：
         {
           "segments": [
@@ -228,37 +236,44 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         var scenes: [NovelScene] = []
 
         for (index, segmentData) in aiResult.segments.enumerated() {
+            let normalizedType = normalizeSegmentType(segmentData.type, text: segmentData.text)
+            let normalizedSceneType = normalizeSceneType(segmentData.sceneType, text: segmentData.text)
+            let normalizedEmotion = normalizeEmotion(
+                segmentData.emotion,
+                text: segmentData.text,
+                segmentType: normalizedType,
+                sceneType: normalizedSceneType
+            )
+            let normalizedIntensity = normalizeSceneIntensity(segmentData.sceneIntensity)
+
             // 创建场景
             let scene = NovelScene(
-                type: SceneType(rawValue: segmentData.sceneType) ?? .peaceful,
-                description: segmentData.sceneType,
-                intensity: segmentData.sceneIntensity
+                type: normalizedSceneType,
+                description: normalizedSceneType.rawValue,
+                intensity: normalizedIntensity
             )
             scenes.append(scene)
 
             // 查找或创建角色
             var speaker: Character?
             if let speakerName = segmentData.speaker, !speakerName.isEmpty {
-                if let existingChar = characters.first(where: { $0.name == speakerName }) {
-                    speaker = existingChar
-                } else {
-                    // 从角色列表中查找性别
-                    let gender = aiResult.characters.first(where: { $0.name == speakerName })?.gender ?? "neutral"
-                    let newChar = Character(
-                        name: speakerName,
-                        gender: Character.Gender(rawValue: gender) ?? .neutral
+                let cleanedSpeakerName = cleanSpeakerName(speakerName)
+                if !cleanedSpeakerName.isEmpty {
+                    let gender = aiResult.characters.first(where: { cleanSpeakerName($0.name) == cleanedSpeakerName })?.gender ?? "neutral"
+                    speaker = upsertCharacter(
+                        named: cleanedSpeakerName,
+                        gender: normalizeGender(gender),
+                        characters: &characters
                     )
-                    characters.insert(newChar)
-                    speaker = newChar
                 }
             }
 
             // 创建片段
             let segment = TextSegment(
                 text: segmentData.text,
-                type: SegmentType(rawValue: segmentData.type) ?? .narration,
+                type: normalizedType,
                 speaker: speaker,
-                emotion: Emotion(rawValue: segmentData.emotion) ?? .neutral,
+                emotion: normalizedEmotion,
                 scene: scene,
                 order: index
             )
@@ -267,11 +282,14 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
         // 添加所有角色
         for charData in aiResult.characters {
-            let character = Character(
-                name: charData.name,
-                gender: Character.Gender(rawValue: charData.gender) ?? .neutral
-            )
-            characters.insert(character)
+            let normalizedName = cleanSpeakerName(charData.name)
+            if !normalizedName.isEmpty {
+                _ = upsertCharacter(
+                    named: normalizedName,
+                    gender: normalizeGender(charData.gender),
+                    characters: &characters
+                )
+            }
         }
 
         return ChunkAnalysisResult(
@@ -418,6 +436,161 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             _ = CC_SHA256(rawBuffer.baseAddress, CC_LONG(data.count), &digest)
         }
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func normalizeSegmentType(_ raw: String, text: String) -> SegmentType {
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch normalized {
+        case "dialogue", "dialog", "speech", "对话":
+            return .dialogue
+        case "narration", "narrative", "旁白", "叙述":
+            return .narration
+        case "description", "描述", "场景描述":
+            return .description
+        case "thought", "inner_thought", "monologue", "内心独白", "心理活动":
+            return .thought
+        default:
+            if text.contains("“") || text.contains("”") || text.contains("\"") {
+                return .dialogue
+            }
+            return .narration
+        }
+    }
+
+    private func normalizeEmotion(
+        _ raw: String,
+        text: String,
+        segmentType: SegmentType,
+        sceneType: SceneType
+    ) -> Emotion {
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch normalized {
+        case "neutral", "calm", "平静", "平和", "自然":
+            return .neutral
+        case "happy", "joy", "joyful", "开心", "高兴", "愉快":
+            return .happy
+        case "sad", "悲伤", "难过", "哀伤":
+            return .sad
+        case "angry", "anger", "愤怒", "生气":
+            return .angry
+        case "excited", "excitement", "激动", "兴奋":
+            return .excited
+        case "fearful", "fear", "scared", "nervous", "恐惧", "害怕", "紧张":
+            return .fearful
+        case "surprised", "surprise", "惊讶", "震惊":
+            return .surprised
+        case "tender", "gentle", "soft", "温柔", "柔和":
+            return .tender
+        default:
+            if segmentType == .thought {
+                return .tender
+            }
+            if sceneType == .battle {
+                return .excited
+            }
+            if sceneType == .sad {
+                return .sad
+            }
+            if text.contains("怒") || text.contains("吼") || text.contains("喝道") {
+                return .angry
+            }
+            if text.contains("笑") || text.contains("开心") {
+                return .happy
+            }
+            if text.contains("惊") || text.contains("啊") {
+                return .surprised
+            }
+            return .neutral
+        }
+    }
+
+    private func normalizeSceneType(_ raw: String, text: String) -> SceneType {
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch normalized {
+        case "peaceful", "calm", "平和", "平静", "日常":
+            return .peaceful
+        case "tense", "紧张", "压迫":
+            return .tense
+        case "battle", "action", "fight", "战斗", "打斗":
+            return .battle
+        case "romantic", "romance", "暧昧", "浪漫":
+            return .romantic
+        case "mysterious", "mystery", "神秘", "诡异":
+            return .mysterious
+        case "sad", "悲伤", "压抑":
+            return .sad
+        case "festive", "celebration", "欢庆", "热闹":
+            return .festive
+        default:
+            if text.contains("剑") || text.contains("杀") || text.contains("轰") {
+                return .battle
+            }
+            if text.contains("温柔") || text.contains("拥抱") || text.contains("亲") {
+                return .romantic
+            }
+            if text.contains("阴森") || text.contains("诡异") || text.contains("黑暗") {
+                return .mysterious
+            }
+            return .peaceful
+        }
+    }
+
+    private func normalizeSceneIntensity(_ raw: Double) -> Double {
+        if raw.isFinite {
+            return min(max(raw, 0.05), 1.0)
+        }
+        return 0.5
+    }
+
+    private func normalizeGender(_ raw: String) -> Character.Gender {
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        switch normalized {
+        case "male", "man", "男":
+            return .male
+        case "female", "woman", "女":
+            return .female
+        case "child", "kid", "儿童", "小孩":
+            return .child
+        case "elder", "old", "老年", "老人":
+            return .elder
+        default:
+            return .neutral
+        }
+    }
+
+    private func cleanSpeakerName(_ raw: String) -> String {
+        raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "：", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "“", with: "")
+            .replacingOccurrences(of: "”", with: "")
+    }
+
+    private func upsertCharacter(
+        named name: String,
+        gender: Character.Gender,
+        characters: inout Set<Character>
+    ) -> Character {
+        if let existing = characters.first(where: { $0.name == name }) {
+            return existing
+        }
+        let character = Character(name: name, gender: gender)
+        characters.insert(character)
+        return character
     }
 }
 

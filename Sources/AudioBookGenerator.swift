@@ -174,48 +174,24 @@ public class AudioBookGenerator {
 
         // 1. 分析文本（优先云端「索引」；正文仅客户端持有，云端仅存 UTF-8 偏移等）
         progressHandler?(GenerationProgress(stage: .analyzing, progress: 0, message: "正在分析文本..."))
-        let canonical = NovelTextAnalyzer.canonicalTextForPlayback(text)
-        let textFingerprint = PlaybackAnalysisCloudClient.textFingerprintForPlaybackInput(text)
-
-        let analysisResult: AnalysisResult
-        if let key = remoteCacheKey,
-           let cloudIndex = await PlaybackAnalysisCloudClient.fetchAnalysisIndex(
-               bookId: key.bookId,
-               chapterIndex: key.chapterIndex,
-               textFingerprint: textFingerprint
-           ),
-           let restored = try? PlaybackAnalysisIndexBuilder.materialize(
-               index: cloudIndex,
-               canonicalText: canonical
-           ) {
-            analysisResult = Self.mergeClientMetadata(into: restored, metadata: metadata)
-            progressHandler?(GenerationProgress(
-                stage: .analyzing,
-                progress: 1,
-                message: "已使用云端分析索引"
-            ))
-        } else {
-            analysisResult = try await textAnalyzer.analyze(text: text, metadata: metadata)
-            if let key = remoteCacheKey, Config.discoverAPIBaseURL != nil {
-                if let index = try? PlaybackAnalysisIndexBuilder.makeIndex(
-                    bookId: key.bookId,
-                    chapterIndex: key.chapterIndex,
-                    canonicalText: canonical,
-                    result: analysisResult
-                ) {
-                    PlaybackAnalysisCloudClient.uploadAnalysisIndexInBackground(index: index)
-                }
-            }
-        }
+        let analysisResult = try await resolveAnalysisResult(
+            text: text,
+            metadata: metadata,
+            remoteCacheKey: remoteCacheKey
+        )
+        progressHandler?(GenerationProgress(
+            stage: .analyzing,
+            progress: 1,
+            message: "已完成文本分析"
+        ))
 
         print("✅ 文本分析完成: \(analysisResult.segments.count) 个片段, \(analysisResult.characters.count) 个角色")
 
         // 2. 为角色分配音色
         progressHandler?(GenerationProgress(stage: .assigningVoices, progress: 0.1, message: "正在分配角色音色..."))
-        voiceManager.loadAvailableVoices(for: ttsProvider)
-        let (voiceAssignments, newBindings) = voiceManager.smartAssignVoices(
-            for: analysisResult.characters,
-            existingBindings: existingVoiceBindings
+        let (voiceAssignments, newBindings) = prepareVoiceAssignments(
+            for: analysisResult,
+            existingVoiceBindings: existingVoiceBindings
         )
         if !newBindings.isEmpty {
             onVoiceBindingsUpdated?(newBindings)
@@ -287,6 +263,46 @@ public class AudioBookGenerator {
         print("🎉 有声书生成完成！总时长: \(formatDuration(playlist.totalDuration))")
 
         return playlist
+    }
+
+    /// 为即将播放的章节预热分析结果与前几段 TTS 缓存，减少章节切换时的首播等待。
+    func warmupUpcomingChapterPlayback(
+        text: String,
+        metadata: NovelMetadata? = nil,
+        existingVoiceBindings: [String: String] = [:],
+        remoteCacheKey: PlaybackRemoteCacheKey? = nil,
+        prefetchSegmentCount: Int = 3,
+        onVoiceBindingsUpdated: (@Sendable ([String: String]) -> Void)? = nil
+    ) async throws {
+        let analysisResult = try await resolveAnalysisResult(
+            text: text,
+            metadata: metadata,
+            remoteCacheKey: remoteCacheKey
+        )
+        guard !analysisResult.segments.isEmpty else { return }
+
+        let (voiceAssignments, newBindings) = prepareVoiceAssignments(
+            for: analysisResult,
+            existingVoiceBindings: existingVoiceBindings
+        )
+        if !newBindings.isEmpty {
+            onVoiceBindingsUpdated?(newBindings)
+        }
+
+        let preloadCount = min(max(1, prefetchSegmentCount), analysisResult.segments.count)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<preloadCount {
+                let segment = analysisResult.segments[index]
+                group.addTask {
+                    _ = try await self.buildPlaybackItem(
+                        segmentIndex: index,
+                        segment: segment,
+                        voiceAssignments: voiceAssignments
+                    )
+                }
+            }
+            try await group.waitForAll()
+        }
     }
 
     /// 批量生成（分章节）
@@ -367,6 +383,52 @@ public class AudioBookGenerator {
         }
 
         return PlaybackItem(segment: segment, audioData: mixedAudio, order: segmentIndex)
+    }
+
+    private func resolveAnalysisResult(
+        text: String,
+        metadata: NovelMetadata?,
+        remoteCacheKey: PlaybackRemoteCacheKey?
+    ) async throws -> AnalysisResult {
+        let canonical = NovelTextAnalyzer.canonicalTextForPlayback(text)
+        let textFingerprint = PlaybackAnalysisCloudClient.textFingerprintForPlaybackInput(text)
+
+        if let key = remoteCacheKey,
+           let cloudIndex = await PlaybackAnalysisCloudClient.fetchAnalysisIndex(
+               bookId: key.bookId,
+               chapterIndex: key.chapterIndex,
+               textFingerprint: textFingerprint
+           ),
+           let restored = try? PlaybackAnalysisIndexBuilder.materialize(
+               index: cloudIndex,
+               canonicalText: canonical
+           ) {
+            return Self.mergeClientMetadata(into: restored, metadata: metadata)
+        }
+
+        let analysisResult = try await textAnalyzer.analyze(text: text, metadata: metadata)
+        if let key = remoteCacheKey, Config.discoverAPIBaseURL != nil {
+            if let index = try? PlaybackAnalysisIndexBuilder.makeIndex(
+                bookId: key.bookId,
+                chapterIndex: key.chapterIndex,
+                canonicalText: canonical,
+                result: analysisResult
+            ) {
+                PlaybackAnalysisCloudClient.uploadAnalysisIndexInBackground(index: index)
+            }
+        }
+        return analysisResult
+    }
+
+    private func prepareVoiceAssignments(
+        for analysisResult: AnalysisResult,
+        existingVoiceBindings: [String: String]
+    ) -> ([Character: Voice], [String: String]) {
+        voiceManager.loadAvailableVoices(for: ttsProvider)
+        return voiceManager.smartAssignVoices(
+            for: analysisResult.characters,
+            existingBindings: existingVoiceBindings
+        )
     }
 
     private static func mergeClientMetadata(into cached: AnalysisResult, metadata: NovelMetadata?) -> AnalysisResult {

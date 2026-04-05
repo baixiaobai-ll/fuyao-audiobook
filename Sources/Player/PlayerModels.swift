@@ -92,6 +92,14 @@ public struct Playlist: Codable, Identifiable {
     /// 若存在，表示当前列表为某一整章的连续分段，进度条按章聚合
     public var chapterContext: PlaybackChapterContext?
 
+    /// 用于恢复播放状态的稳定 key。
+    public var resumeIdentifier: String {
+        if let ctx = chapterContext {
+            return "chapter:\(ctx.shelfBookId.uuidString):\(ctx.currentChapterIndex)"
+        }
+        return "playlist:\(id.uuidString)"
+    }
+
     public init(
         id: UUID = UUID(),
         title: String,
@@ -252,21 +260,56 @@ public struct PlaybackConfig: Codable {
 
 /// 播放会话（用于保存和恢复播放状态）
 struct PlaybackSession: Codable {
-    let playlistId: UUID
+    let playlistId: UUID?
+    let resumeIdentifier: String
     let currentItemIndex: Int
     let currentTime: TimeInterval
     let lastPlayedDate: Date
 
     init(
-        playlistId: UUID,
+        playlistId: UUID? = nil,
+        resumeIdentifier: String,
         currentItemIndex: Int,
         currentTime: TimeInterval,
         lastPlayedDate: Date = Date()
     ) {
         self.playlistId = playlistId
+        self.resumeIdentifier = resumeIdentifier
         self.currentItemIndex = currentItemIndex
         self.currentTime = currentTime
         self.lastPlayedDate = lastPlayedDate
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case playlistId
+        case resumeIdentifier
+        case currentItemIndex
+        case currentTime
+        case lastPlayedDate
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        playlistId = try container.decodeIfPresent(UUID.self, forKey: .playlistId)
+        currentItemIndex = try container.decode(Int.self, forKey: .currentItemIndex)
+        currentTime = try container.decode(TimeInterval.self, forKey: .currentTime)
+        lastPlayedDate = try container.decodeIfPresent(Date.self, forKey: .lastPlayedDate) ?? Date.distantPast
+        if let resumeIdentifier = try container.decodeIfPresent(String.self, forKey: .resumeIdentifier), !resumeIdentifier.isEmpty {
+            self.resumeIdentifier = resumeIdentifier
+        } else if let playlistId {
+            self.resumeIdentifier = "playlist:\(playlistId.uuidString)"
+        } else {
+            self.resumeIdentifier = "unknown"
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(playlistId, forKey: .playlistId)
+        try container.encode(resumeIdentifier, forKey: .resumeIdentifier)
+        try container.encode(currentItemIndex, forKey: .currentItemIndex)
+        try container.encode(currentTime, forKey: .currentTime)
+        try container.encode(lastPlayedDate, forKey: .lastPlayedDate)
     }
 }
 
