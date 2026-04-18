@@ -34,11 +34,22 @@ struct BookSearchView: View {
     }
 
     private var hasCloudAccess: Bool {
-        profileStore.isLoggedIn && activationStatusRaw == "active"
+        profileStore.isLoggedIn && isActivated
     }
 
     private var dailyQuotaRemaining: Int {
         max(dailyQuotaTotal - dailyQuotaUsed, 0)
+    }
+
+    private var hasDiscoverAccess: Bool {
+        hasCloudAccess
+    }
+
+    private var isActivated: Bool {
+        let normalized = activationStatusRaw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return ["1", "true", "yes", "active", "activated", "success", "redeemed", "valid", "enabled", "vip", "member"].contains(normalized)
     }
 
     var body: some View {
@@ -69,12 +80,16 @@ struct BookSearchView: View {
             .navigationBarTitleDisplayMode(.large)
             .tint(pageIndigo)
             .onAppear {
-                guard hasCloudAccess, !didLoadInitialDiscover else { return }
-                didLoadInitialDiscover = true
-                loadInitialDiscover()
+                handleDiscoverAccessOnAppear()
+            }
+            .onChange(of: profileStore.isLoggedIn) { _ in
+                handleDiscoverAccessStateChanged()
+            }
+            .onChange(of: activationStatusRaw) { _ in
+                handleDiscoverAccessStateChanged()
             }
             .onReceive(Timer.publish(every: 20 * 60, on: .main, in: .common).autoconnect()) { _ in
-                guard hasCloudAccess, scenePhase == .active, !isSearching else { return }
+                guard scenePhase == .active, !isSearching, hasDiscoverAccess else { return }
                 Task { await silentRefreshDiscover() }
             }
             .onDisappear {
@@ -127,6 +142,10 @@ struct BookSearchView: View {
                     .submitLabel(.search)
                     .onSubmit {
                         searchDebounceTask?.cancel()
+                        guard hasDiscoverAccess else {
+                            applyDiscoverAccessRestrictedState()
+                            return
+                        }
                         searchByKeyword(immediateKeyword: keyword)
                     }
                     .onChange(of: keyword) { newValue in
@@ -138,6 +157,15 @@ struct BookSearchView: View {
                             searchErrorMessage = nil
                             searchNoticeMessage = nil
                             searchToken = UUID()
+                            return
+                        }
+
+                        guard hasDiscoverAccess else {
+                            searchDebounceTask?.cancel()
+                            searchResults = []
+                            isSearchLoading = false
+                            searchNoticeMessage = nil
+                            searchErrorMessage = discoverAccessMessage
                             return
                         }
 
@@ -255,7 +283,13 @@ struct BookSearchView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(BookSourceEngine.categoryPaths, id: \.name) { cat in
-                    Button(action: { loadCategory(cat) }) {
+                    Button(action: {
+                        guard hasDiscoverAccess else {
+                            applyDiscoverAccessRestrictedState()
+                            return
+                        }
+                        loadCategory(cat)
+                    }) {
                         Text(cat.name)
                             .font(.subheadline.weight(selectedCategory == cat.name ? .semibold : .medium))
                             .foregroundStyle(selectedCategory == cat.name ? Color.white : AppTheme.Colors.textPrimary)
@@ -571,6 +605,10 @@ struct BookSearchView: View {
     // MARK: - Data Loading
 
     private func loadInitialDiscover() {
+        guard hasDiscoverAccess else {
+            applyDiscoverAccessRestrictedState()
+            return
+        }
         let first = BookSourceEngine.categoryPaths[0]
         selectedCategory = first.name
         loadRanking()
@@ -578,6 +616,10 @@ struct BookSearchView: View {
     }
 
     private func loadRanking() {
+        guard hasDiscoverAccess else {
+            applyDiscoverAccessRestrictedState()
+            return
+        }
         let key = BookSourceCache.rankingKey
         if let cached = cache.retrieve(forKey: key) {
             rankingBooks = cached.books
@@ -591,19 +633,26 @@ struct BookSearchView: View {
 
     @MainActor
     private func refreshRankingFromNetwork() async {
+        guard DiscoverAccessGate.canUseDiscover() else { return }
         if let remote = await DiscoverAPIClient.fetchRanking(), !remote.isEmpty {
             let normalizedRemote = normalized(remote)
+            guard DiscoverAccessGate.canUseDiscover() else { return }
             cache.store(normalizedRemote, forKey: BookSourceCache.rankingKey)
             rankingBooks = normalizedRemote
             return
         }
         guard let results = try? await engine.fetchRanking(), !results.isEmpty else { return }
         let normalizedResults = normalized(results)
+        guard DiscoverAccessGate.canUseDiscover() else { return }
         cache.store(normalizedResults, forKey: BookSourceCache.rankingKey)
         rankingBooks = normalizedResults
     }
 
     private func loadCategory(_ cat: (name: String, sort: String)) {
+        guard hasDiscoverAccess else {
+            applyDiscoverAccessRestrictedState()
+            return
+        }
         selectedCategory = cat.name
         discoverErrorMessage = nil
 
@@ -623,8 +672,10 @@ struct BookSearchView: View {
 
     @MainActor
     private func refreshCategoryFromNetwork(_ cat: (name: String, sort: String)) async {
+        guard DiscoverAccessGate.canUseDiscover() else { return }
         if let remote = await DiscoverAPIClient.fetchCategory(sort: cat.sort), !remote.isEmpty {
             let normalizedRemote = normalized(remote)
+            guard DiscoverAccessGate.canUseDiscover() else { return }
             cache.store(normalizedRemote, forKey: BookSourceCache.categoryKey(cat.sort))
             if selectedCategory == cat.name {
                 categoryBooks = normalizedRemote
@@ -635,6 +686,7 @@ struct BookSearchView: View {
         }
         do {
             let results = normalized(try await engine.fetchCategory(sort: cat.sort))
+            guard DiscoverAccessGate.canUseDiscover() else { return }
             cache.store(results, forKey: BookSourceCache.categoryKey(cat.sort))
             guard selectedCategory == cat.name else { return }
             categoryBooks = results
@@ -650,6 +702,7 @@ struct BookSearchView: View {
     }
 
     private func refreshDiscoverPull() async {
+        guard DiscoverAccessGate.canUseDiscover() else { return }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await refreshRankingFromNetwork() }
             if let cat = BookSourceEngine.categoryPaths.first(where: { $0.name == selectedCategory }) {
@@ -659,6 +712,7 @@ struct BookSearchView: View {
     }
 
     private func silentRefreshDiscover() async {
+        guard DiscoverAccessGate.canUseDiscover() else { return }
         await refreshRankingFromNetwork()
         if let cat = BookSourceEngine.categoryPaths.first(where: { $0.name == selectedCategory }) {
             await refreshCategoryFromNetwork(cat)
@@ -670,6 +724,11 @@ struct BookSearchView: View {
     private func searchByKeyword(immediateKeyword: String? = nil) {
         let kw = (immediateKeyword ?? keyword).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !kw.isEmpty else { return }
+        guard hasDiscoverAccess else {
+            applyDiscoverAccessRestrictedState()
+            searchErrorMessage = discoverAccessMessage
+            return
+        }
 
         let token = UUID()
         let cacheKey = BookSourceCache.searchKey(kw)
@@ -729,6 +788,7 @@ struct BookSearchView: View {
     }
 
     private func preferredSearchResults(for keyword: String) async -> [BookSearchResult]? {
+        guard DiscoverAccessGate.canUseDiscover() else { return nil }
         if let remote = await DiscoverAPIClient.fetchSearch(keyword: keyword), !remote.isEmpty {
             return normalized(remote)
         }
@@ -759,6 +819,7 @@ struct BookSearchView: View {
     }
 
     private func fallbackSearchResults(for keyword: String) async -> [BookSearchResult] {
+        guard DiscoverAccessGate.canUseDiscover() else { return [] }
         let all = await withTaskGroup(of: [BookSearchResult].self, returning: [BookSearchResult].self) { group in
             for cat in BookSourceEngine.categoryPaths {
                 group.addTask {
@@ -782,6 +843,7 @@ struct BookSearchView: View {
     }
 
     private func fallbackBooks(for category: (name: String, sort: String)) async -> [BookSearchResult] {
+        guard DiscoverAccessGate.canUseDiscover() else { return [] }
         let key = BookSourceCache.categoryKey(category.sort)
         let cached = cache.retrieve(forKey: key)
         let staleFallback = cached?.books ?? []
@@ -817,5 +879,59 @@ struct BookSearchView: View {
                 intro: result.intro.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
+    }
+
+    private var discoverAccessMessage: String {
+        if !profileStore.isLoggedIn {
+            return "登录后可使用发现页与云端书籍"
+        }
+        if !isActivated {
+            return "激活成功后可使用发现页与云端书籍"
+        }
+        return "当前账号暂不可使用发现页"
+    }
+
+    private func handleDiscoverAccessOnAppear() {
+        guard hasDiscoverAccess else {
+            applyDiscoverAccessRestrictedState()
+            return
+        }
+        guard !didLoadInitialDiscover else { return }
+        didLoadInitialDiscover = true
+        loadInitialDiscover()
+    }
+
+    private func handleDiscoverAccessStateChanged() {
+        if hasDiscoverAccess {
+            discoverErrorMessage = nil
+            searchErrorMessage = nil
+            if !didLoadInitialDiscover {
+                didLoadInitialDiscover = true
+                loadInitialDiscover()
+            } else {
+                Task { await silentRefreshDiscover() }
+            }
+
+            let trimmedKeyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedKeyword.isEmpty {
+                searchByKeyword(immediateKeyword: trimmedKeyword)
+            }
+            return
+        }
+
+        applyDiscoverAccessRestrictedState()
+    }
+
+    private func applyDiscoverAccessRestrictedState() {
+        searchDebounceTask?.cancel()
+        searchToken = UUID()
+        rankingBooks = []
+        categoryBooks = []
+        searchResults = []
+        isDiscoverLoading = false
+        isSearchLoading = false
+        searchNoticeMessage = nil
+        discoverErrorMessage = discoverAccessMessage
+        searchErrorMessage = keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : discoverAccessMessage
     }
 }

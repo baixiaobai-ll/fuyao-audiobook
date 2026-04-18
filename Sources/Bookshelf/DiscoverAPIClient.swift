@@ -1,5 +1,99 @@
 import Foundation
 
+enum DiscoverAccessGate {
+    struct AccessState: Equatable, Sendable {
+        let isLoggedIn: Bool
+        let isActivated: Bool
+
+        var canUseDiscover: Bool {
+            isLoggedIn && isActivated
+        }
+    }
+
+    static let userProfileDataKey = "userprofile_data"
+    static let activationStatusKey = "fuyao_activation_status"
+    static let dailyQuotaTotalKey = "fuyao_daily_quota_total"
+    static let dailyQuotaUsedKey = "fuyao_daily_quota_used"
+    static let dailyQuotaResetKey = "fuyao_daily_quota_reset_text"
+
+    static func currentState(userDefaults: UserDefaults = .standard) -> AccessState {
+        let profile = storedProfile(from: userDefaults)
+        let isLoggedIn = profile?.isLoggedIn ?? false
+        let isActivated = activationStatus(from: userDefaults) ?? profile?.isActivated ?? false
+        return AccessState(isLoggedIn: isLoggedIn, isActivated: isActivated)
+    }
+
+    static func canUseDiscover(userDefaults: UserDefaults = .standard) -> Bool {
+        currentState(userDefaults: userDefaults).canUseDiscover
+    }
+
+    static func activationStatus(from userDefaults: UserDefaults = .standard) -> Bool? {
+        guard let object = userDefaults.object(forKey: activationStatusKey) else {
+            return nil
+        }
+        return normalizedActivationStatus(from: object)
+    }
+
+    static func persistActivationStatus(_ isActivated: Bool, userDefaults: UserDefaults = .standard) {
+        userDefaults.set(isActivated, forKey: activationStatusKey)
+    }
+
+    private struct StoredUserProfile: Decodable {
+        let isLoggedIn: Bool
+        let isActivated: Bool?
+    }
+
+    private static func storedProfile(from userDefaults: UserDefaults) -> StoredUserProfile? {
+        guard let data = userDefaults.data(forKey: userProfileDataKey) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(StoredUserProfile.self, from: data)
+    }
+
+    private static func normalizedActivationStatus(from object: Any) -> Bool? {
+        switch object {
+        case let value as Bool:
+            return value
+        case let value as Int:
+            return value > 0
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as String:
+            let normalized = value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if normalized.isEmpty {
+                return nil
+            }
+            if ["1", "true", "yes", "active", "activated", "success", "redeemed", "valid", "enabled", "已激活", "激活成功"].contains(normalized) {
+                return true
+            }
+            if ["0", "false", "no", "inactive", "pending", "expired", "invalid", "disabled", "not_activated", "未激活", "待激活", "失效"].contains(normalized) {
+                return false
+            }
+            if let data = value.data(using: .utf8),
+               let decoded = try? JSONSerialization.jsonObject(with: data) {
+                return normalizedActivationStatus(from: decoded)
+            }
+            return nil
+        case let value as [String: Any]:
+            for key in ["isActivated", "activated", "active", "status", "activationStatus"] {
+                if let candidate = value[key], let normalized = normalizedActivationStatus(from: candidate) {
+                    return normalized
+                }
+            }
+            return nil
+        case let value as Data:
+            if let decoded = try? JSONSerialization.jsonObject(with: value) {
+                return normalizedActivationStatus(from: decoded)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+}
+
 /// 自建「发现」聚合 API。未配置 `DISCOVER_API_BASE_URL` 或请求失败时由调用方回退到 `BookSourceEngine`。
 enum DiscoverAPIClient {
 
@@ -29,6 +123,7 @@ enum DiscoverAPIClient {
         path: String,
         queryItems: [URLQueryItem] = []
     ) async -> [BookSearchResult]? {
+        guard DiscoverAccessGate.canUseDiscover() else { return nil }
         guard let base = Config.discoverAPIBaseURL else { return nil }
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))

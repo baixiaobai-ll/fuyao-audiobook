@@ -70,11 +70,52 @@ enum AvatarSource: Codable, Equatable {
 
 private struct UserProfile: Codable {
     var isLoggedIn: Bool = false
+    var isActivated: Bool = false
     var phone: String = ""
     var nickname: String = ""
     var userId: String = ""
     var sessionToken: String = ""
     var avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
+
+    private enum CodingKeys: String, CodingKey {
+        case isLoggedIn
+        case isActivated
+        case phone
+        case nickname
+        case userId
+        case sessionToken
+        case avatarSource
+    }
+
+    init(
+        isLoggedIn: Bool = false,
+        isActivated: Bool = false,
+        phone: String = "",
+        nickname: String = "",
+        userId: String = "",
+        sessionToken: String = "",
+        avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
+    ) {
+        self.isLoggedIn = isLoggedIn
+        self.isActivated = isActivated
+        self.phone = phone
+        self.nickname = nickname
+        self.userId = userId
+        self.sessionToken = sessionToken
+        self.avatarSource = avatarSource
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isLoggedIn = try container.decodeIfPresent(Bool.self, forKey: .isLoggedIn) ?? false
+        isActivated = try container.decodeIfPresent(Bool.self, forKey: .isActivated) ?? false
+        phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        nickname = try container.decodeIfPresent(String.self, forKey: .nickname) ?? ""
+        userId = try container.decodeIfPresent(String.self, forKey: .userId) ?? ""
+        sessionToken = try container.decodeIfPresent(String.self, forKey: .sessionToken) ?? ""
+        avatarSource = try container.decodeIfPresent(AvatarSource.self, forKey: .avatarSource)
+            ?? .preset(AvatarPresetCatalog.defaultId)
+    }
 }
 
 // MARK: - UserProfileStore
@@ -82,6 +123,7 @@ private struct UserProfile: Codable {
 @MainActor
 final class UserProfileStore: ObservableObject {
     @Published var isLoggedIn: Bool = false
+    @Published var isActivated: Bool = false
     @Published var phone: String = ""
     @Published var nickname: String = ""
     @Published var userId: String = ""
@@ -109,16 +151,33 @@ final class UserProfileStore: ObservableObject {
         load()
     }
 
+    var hasDiscoverAccess: Bool {
+        isLoggedIn && isActivated
+    }
+
     // MARK: - Login / Logout
 
-    func login(phone: String) {
+    func login(phone: String, nickname: String? = nil, activated: Bool? = nil) {
         self.isLoggedIn = true
         self.phone = phone
-        self.nickname = "书友\(String(phone.suffix(4)))"
+        if let activated {
+            self.isActivated = activated
+            storeAccessState(
+                activationStatus: activated ? "active" : "inactive",
+                activationPlanName: nil,
+                dailyQuotaTotal: nil,
+                dailyQuotaUsed: nil,
+                dailyQuotaRemaining: nil,
+                dailyQuotaResetText: nil,
+                activationExpiryText: nil
+            )
+        } else {
+            resetAccessState()
+        }
+        self.nickname = nickname ?? "书友\(String(phone.suffix(4)))"
         self.userId = ""
         self.sessionToken = ""
         self.avatarSource = .preset(AvatarPresetCatalog.defaultId)
-        resetAccessState()
         save()
     }
 
@@ -188,12 +247,22 @@ final class UserProfileStore: ObservableObject {
 
     func logout() {
         isLoggedIn = false
+        isActivated = false
         phone = ""
         nickname = ""
         userId = ""
         sessionToken = ""
         avatarSource = .preset(AvatarPresetCatalog.defaultId)
         resetAccessState()
+        save()
+    }
+
+    func updateActivationStatus(_ activated: Bool) {
+        isActivated = activated
+        UserDefaults.standard.set(
+            activated ? "active" : "inactive",
+            forKey: AccessKeys.activationStatus
+        )
         save()
     }
 
@@ -251,6 +320,7 @@ final class UserProfileStore: ObservableObject {
     private func save() {
         let profile = UserProfile(
             isLoggedIn: isLoggedIn,
+            isActivated: isActivated,
             phone: phone,
             nickname: nickname,
             userId: userId,
@@ -268,6 +338,7 @@ final class UserProfileStore: ObservableObject {
             return
         }
         isLoggedIn = profile.isLoggedIn
+        isActivated = Self.readActivationStatus(from: UserDefaults.standard) ?? profile.isActivated
         phone = profile.phone
         nickname = profile.nickname
         userId = profile.userId
@@ -348,6 +419,34 @@ final class UserProfileStore: ObservableObject {
             return "expired"
         default:
             return "inactive"
+        }
+    }
+
+    private static func readActivationStatus(from defaults: UserDefaults) -> Bool? {
+        guard let object = defaults.object(forKey: AccessKeys.activationStatus) else {
+            return nil
+        }
+
+        switch object {
+        case let value as Bool:
+            return value
+        case let value as Int:
+            return value > 0
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as String:
+            let normalized = value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if ["1", "true", "yes", "active", "activated", "success", "redeemed", "valid", "enabled", "已激活", "激活成功"].contains(normalized) {
+                return true
+            }
+            if ["0", "false", "no", "inactive", "pending", "expired", "invalid", "disabled", "not_activated", "未激活", "待激活", "失效"].contains(normalized) {
+                return false
+            }
+            return nil
+        default:
+            return nil
         }
     }
 }
