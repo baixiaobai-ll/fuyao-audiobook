@@ -23,12 +23,17 @@ targets:
       - path: Resources
       - path: App/Assets.xcassets
       - path: Config.plist
+      - path: Vendor/NumberAuthSDK/Resources/ATAuthSDK.bundle
     dependencies:
       - sdk: SwiftUI.framework
       - sdk: AVFoundation.framework
       - sdk: Foundation.framework
+      - sdk: Network.framework
       - sdk: WebKit.framework
       - sdk: MediaPlayer.framework
+      - framework: Vendor/NumberAuthSDK/ATAuthSDK.xcframework
+      - framework: Vendor/NumberAuthSDK/YTXOperators.xcframework
+      - framework: Vendor/NumberAuthSDK/YTXMonitor.xcframework
       - target: 扶摇WidgetExtension
         embed: true
     info:
@@ -39,6 +44,8 @@ targets:
           - CFBundleURLName: com.fuyao.audiobook
             CFBundleURLSchemes:
               - fuyao
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         NSSupportsLiveActivities: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
@@ -55,6 +62,9 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: com.fuyao.audiobook
       INFOPLIST_FILE: App/Info.plist
       SWIFT_VERSION: "5"
+      OTHER_LDFLAGS:
+        - "$(inherited)"
+        - "-ObjC"
       TARGETED_DEVICE_FAMILY: "1,2"
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: ""

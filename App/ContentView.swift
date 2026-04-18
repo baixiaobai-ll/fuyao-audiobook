@@ -4,6 +4,7 @@ import UIKit
 struct ContentView: View {
     @EnvironmentObject var store: BookshelfStore
     @EnvironmentObject var tabRouter: MainTabRouter
+    @EnvironmentObject var profileStore: UserProfileStore
 
     init() {
         let appearance = UITabBarAppearance()
@@ -65,6 +66,10 @@ struct ContentView: View {
                 .tag(MainTabRouter.Tab.profile.rawValue)
         }
         .tint(AppTheme.Colors.brandPrimary)
+        .fullScreenCover(isPresented: $tabRouter.isLoginPresented) {
+            LoginView()
+                .environmentObject(profileStore)
+        }
     }
 
     @ViewBuilder
