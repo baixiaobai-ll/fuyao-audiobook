@@ -45,3 +45,9 @@ App/Config.plist
 
 # Large binary
 xcodegen.zip
+
+# Local backend runtime data
+backend/data/
+backend/.pycache/
+backend/.env
+*.sqlite3
