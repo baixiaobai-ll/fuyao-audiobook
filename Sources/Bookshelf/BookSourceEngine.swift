@@ -38,6 +38,9 @@ struct BookSourceEngine: Sendable {
     // MARK: - Public API
 
     func fetchCategory(sort: String) async throws -> [BookSearchResult] {
+        guard DiscoverAccessGate.canUseDiscover() else {
+            throw URLError(.userAuthenticationRequired)
+        }
         let data = try await fetchFirstSuccessfulData(
             path: "sort",
             queryItems: [URLQueryItem(name: "sort", value: sort)]
@@ -47,11 +50,17 @@ struct BookSourceEngine: Sendable {
     }
 
     func fetchRanking() async throws -> [BookSearchResult] {
+        guard DiscoverAccessGate.canUseDiscover() else {
+            throw URLError(.userAuthenticationRequired)
+        }
         let results = try await fetchCategory(sort: "finish")
         return Array(results.prefix(10))
     }
 
     func search(keyword: String) async throws -> [BookSearchResult] {
+        guard DiscoverAccessGate.canUseDiscover() else {
+            throw URLError(.userAuthenticationRequired)
+        }
         let data = try await fetchFirstSuccessfulData(
             path: "search",
             queryItems: [URLQueryItem(name: "q", value: keyword)]
