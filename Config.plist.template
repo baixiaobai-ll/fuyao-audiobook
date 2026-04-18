@@ -39,5 +39,17 @@
     <!-- ==================== -->
 
     <!-- 文本分析当前固定走通义千问，无需额外 Base URL 配置 -->
+
+    <!-- ==================== -->
+    <!-- 号码认证配置 -->
+    <!-- ==================== -->
+
+    <!-- 认证服务根地址（若与发现页后端一致，也可复用同一域名） -->
+    <key>AUTH_API_BASE_URL</key>
+    <string>https://api.example.com</string>
+
+    <!-- 阿里云号码认证 SDK 鉴权串，建议在真机环境下填写正式值 -->
+    <key>NUMBER_AUTH_SDK_INFO</key>
+    <string>your-number-auth-sdk-info</string>
 </dict>
 </plist>

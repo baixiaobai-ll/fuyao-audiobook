@@ -72,6 +72,8 @@ private struct UserProfile: Codable {
     var isLoggedIn: Bool = false
     var phone: String = ""
     var nickname: String = ""
+    var userId: String = ""
+    var sessionToken: String = ""
     var avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
 }
 
@@ -82,7 +84,19 @@ final class UserProfileStore: ObservableObject {
     @Published var isLoggedIn: Bool = false
     @Published var phone: String = ""
     @Published var nickname: String = ""
+    @Published var userId: String = ""
+    @Published var sessionToken: String = ""
     @Published var avatarSource: AvatarSource = .preset(AvatarPresetCatalog.defaultId)
+
+    private enum AccessKeys {
+        static let activationStatus = "fuyao_activation_status"
+        static let activationPlanName = "fuyao_activation_plan_name"
+        static let activationRemainingQuota = "fuyao_activation_remaining_quota"
+        static let activationExpiryText = "fuyao_activation_expiry_text"
+        static let dailyQuotaTotal = "fuyao_daily_quota_total"
+        static let dailyQuotaUsed = "fuyao_daily_quota_used"
+        static let dailyQuotaResetText = "fuyao_daily_quota_reset_text"
+    }
 
     private static let storageKey = "userprofile_data"
 
@@ -101,7 +115,74 @@ final class UserProfileStore: ObservableObject {
         self.isLoggedIn = true
         self.phone = phone
         self.nickname = "书友\(String(phone.suffix(4)))"
+        self.userId = ""
+        self.sessionToken = ""
         self.avatarSource = .preset(AvatarPresetCatalog.defaultId)
+        resetAccessState()
+        save()
+    }
+
+    func applyLoginSuccess(
+        phone: String,
+        nickname: String?,
+        userId: String?,
+        sessionToken: String?,
+        activationStatusRaw: String,
+        activationPlanName: String?,
+        dailyQuotaTotal: Int?,
+        dailyQuotaUsed: Int?,
+        dailyQuotaRemaining: Int?,
+        dailyQuotaResetText: String?,
+        activationExpiryText: String?
+    ) {
+        let trimmedNickname = nickname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        isLoggedIn = true
+        self.phone = phone
+        self.nickname = !trimmedNickname.isEmpty
+            ? trimmedNickname
+            : "书友\(String(phone.suffix(4)))"
+        self.userId = userId ?? ""
+        self.sessionToken = sessionToken ?? ""
+        if case .preset = avatarSource {
+            avatarSource = .preset(AvatarPresetCatalog.defaultId)
+        }
+
+        let normalizedStatus: String
+        normalizedStatus = Self.normalizeActivationStatus(activationStatusRaw)
+
+        storeAccessState(
+            activationStatus: normalizedStatus,
+            activationPlanName: activationPlanName,
+            dailyQuotaTotal: dailyQuotaTotal,
+            dailyQuotaUsed: dailyQuotaUsed,
+            dailyQuotaRemaining: dailyQuotaRemaining,
+            dailyQuotaResetText: dailyQuotaResetText,
+            activationExpiryText: activationExpiryText
+        )
+
+        save()
+    }
+
+    func applyActivationSuccess(
+        activationStatusRaw: String,
+        activationPlanName: String?,
+        dailyQuotaTotal: Int?,
+        dailyQuotaUsed: Int?,
+        dailyQuotaRemaining: Int?,
+        dailyQuotaResetText: String?,
+        activationExpiryText: String?
+    ) {
+        let normalizedStatus = Self.normalizeActivationStatus(activationStatusRaw)
+        storeAccessState(
+            activationStatus: normalizedStatus,
+            activationPlanName: activationPlanName,
+            dailyQuotaTotal: dailyQuotaTotal,
+            dailyQuotaUsed: dailyQuotaUsed,
+            dailyQuotaRemaining: dailyQuotaRemaining,
+            dailyQuotaResetText: dailyQuotaResetText,
+            activationExpiryText: activationExpiryText
+        )
         save()
     }
 
@@ -109,7 +190,10 @@ final class UserProfileStore: ObservableObject {
         isLoggedIn = false
         phone = ""
         nickname = ""
+        userId = ""
+        sessionToken = ""
         avatarSource = .preset(AvatarPresetCatalog.defaultId)
+        resetAccessState()
         save()
     }
 
@@ -169,6 +253,8 @@ final class UserProfileStore: ObservableObject {
             isLoggedIn: isLoggedIn,
             phone: phone,
             nickname: nickname,
+            userId: userId,
+            sessionToken: sessionToken,
             avatarSource: avatarSource
         )
         if let data = try? JSONEncoder().encode(profile) {
@@ -184,6 +270,8 @@ final class UserProfileStore: ObservableObject {
         isLoggedIn = profile.isLoggedIn
         phone = profile.phone
         nickname = profile.nickname
+        userId = profile.userId
+        sessionToken = profile.sessionToken
         switch profile.avatarSource {
         case .preset(let id):
             let normalized = AvatarPresetCatalog.normalizedPresetId(id)
@@ -206,5 +294,60 @@ final class UserProfileStore: ObservableObject {
         #else
         return nil
         #endif
+    }
+
+    private func resetAccessState() {
+        let defaults = UserDefaults.standard
+        defaults.set("inactive", forKey: AccessKeys.activationStatus)
+        defaults.set("扶摇云端畅听", forKey: AccessKeys.activationPlanName)
+        defaults.set(0, forKey: AccessKeys.activationRemainingQuota)
+        defaults.set("", forKey: AccessKeys.activationExpiryText)
+        defaults.set(0, forKey: AccessKeys.dailyQuotaTotal)
+        defaults.set(0, forKey: AccessKeys.dailyQuotaUsed)
+        defaults.set("每日 00:00 重置", forKey: AccessKeys.dailyQuotaResetText)
+    }
+
+    private func storeAccessState(
+        activationStatus: String,
+        activationPlanName: String?,
+        dailyQuotaTotal: Int?,
+        dailyQuotaUsed: Int?,
+        dailyQuotaRemaining: Int?,
+        dailyQuotaResetText: String?,
+        activationExpiryText: String?
+    ) {
+        let total = dailyQuotaTotal ?? {
+            if let remaining = dailyQuotaRemaining, let used = dailyQuotaUsed {
+                return remaining + used
+            }
+            return activationStatus == "active" ? 120 : 0
+        }()
+        let used = dailyQuotaUsed ?? max(total - (dailyQuotaRemaining ?? total), 0)
+        let remaining = dailyQuotaRemaining ?? max(total - used, 0)
+
+        let defaults = UserDefaults.standard
+        defaults.set(activationStatus, forKey: AccessKeys.activationStatus)
+        defaults.set(activationPlanName ?? "扶摇云端畅听", forKey: AccessKeys.activationPlanName)
+        defaults.set(remaining, forKey: AccessKeys.activationRemainingQuota)
+        defaults.set(activationExpiryText ?? "", forKey: AccessKeys.activationExpiryText)
+        defaults.set(total, forKey: AccessKeys.dailyQuotaTotal)
+        defaults.set(used, forKey: AccessKeys.dailyQuotaUsed)
+        defaults.set(
+            dailyQuotaResetText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? dailyQuotaResetText
+                : "每日 00:00 重置",
+            forKey: AccessKeys.dailyQuotaResetText
+        )
+    }
+
+    private static func normalizeActivationStatus(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "active", "activated", "valid", "enabled":
+            return "active"
+        case "expired", "expire":
+            return "expired"
+        default:
+            return "inactive"
+        }
     }
 }

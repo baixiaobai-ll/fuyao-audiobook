@@ -193,6 +193,33 @@ struct Config {
         return nil
     }
 
+    /// 认证服务根地址（如 https://api.example.com），用于号码认证一键登录换取会话。
+    /// 未单独配置时，会回退到 `DISCOVER_API_BASE_URL`。
+    static var authAPIBaseURL: String? {
+        if let e = ProcessInfo.processInfo.environment["AUTH_API_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !e.isEmpty {
+            return e
+        }
+        if let p = loadFromPlist(key: "AUTH_API_BASE_URL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            return p
+        }
+        return discoverAPIBaseURL
+    }
+
+    /// 阿里云号码认证 SDK 鉴权串，建议由服务端安全下发；当前版本优先读取本地配置。
+    static var numberAuthSDKInfo: String? {
+        if let e = ProcessInfo.processInfo.environment["NUMBER_AUTH_SDK_INFO"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !e.isEmpty {
+            return e
+        }
+        if let p = loadFromPlist(key: "NUMBER_AUTH_SDK_INFO")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            return p
+        }
+        return nil
+    }
+
     /// 单章送入 TTS 分析的最大字数（过大增加耗时与费用）。
     static var chapterTTSDisplayMaxChars: Int {
         let v = UserDefaults.standard.integer(forKey: "chapterTTSDisplayMaxChars")

@@ -11,8 +11,17 @@ final class MainTabRouter: ObservableObject {
     }
 
     @Published var selectedTab: Int = Tab.bookshelf.rawValue
+    @Published var isLoginPresented = false
 
     func openPlayTab() {
         selectedTab = Tab.play.rawValue
+    }
+
+    func presentLogin() {
+        isLoginPresented = true
+    }
+
+    func dismissLogin() {
+        isLoginPresented = false
     }
 }

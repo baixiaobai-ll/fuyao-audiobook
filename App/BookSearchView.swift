@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BookSearchView: View {
     @EnvironmentObject var store: BookshelfStore
+    @EnvironmentObject var profileStore: UserProfileStore
+    @EnvironmentObject var tabRouter: MainTabRouter
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var keyword = ""
@@ -17,6 +19,9 @@ struct BookSearchView: View {
     @State private var searchToken = UUID()
     @State private var didLoadInitialDiscover = false
     @State private var searchDebounceTask: Task<Void, Never>? = nil
+    @AppStorage("fuyao_activation_status") private var activationStatusRaw = "inactive"
+    @AppStorage("fuyao_daily_quota_total") private var dailyQuotaTotal = 120
+    @AppStorage("fuyao_daily_quota_used") private var dailyQuotaUsed = 0
 
     private let engine = BookSourceEngine()
     private let cache = BookSourceCache()
@@ -28,6 +33,14 @@ struct BookSearchView: View {
         !keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var hasCloudAccess: Bool {
+        profileStore.isLoggedIn && activationStatusRaw == "active"
+    }
+
+    private var dailyQuotaRemaining: Int {
+        max(dailyQuotaTotal - dailyQuotaUsed, 0)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -35,13 +48,17 @@ struct BookSearchView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 16) {
-                        searchBar
+                        if hasCloudAccess {
+                            searchBar
 
-                        if isSearching {
-                            searchResultsSection
+                            if isSearching {
+                                searchResultsSection
+                            } else {
+                                categoryTabs
+                                discoverSections
+                            }
                         } else {
-                            categoryTabs
-                            discoverSections
+                            restrictedStateCard
                         }
                     }
                     .padding(.horizontal, 16)
@@ -52,16 +69,21 @@ struct BookSearchView: View {
             .navigationBarTitleDisplayMode(.large)
             .tint(pageIndigo)
             .onAppear {
-                guard !didLoadInitialDiscover else { return }
+                guard hasCloudAccess, !didLoadInitialDiscover else { return }
                 didLoadInitialDiscover = true
                 loadInitialDiscover()
             }
             .onReceive(Timer.publish(every: 20 * 60, on: .main, in: .common).autoconnect()) { _ in
-                guard scenePhase == .active, !isSearching else { return }
+                guard hasCloudAccess, scenePhase == .active, !isSearching else { return }
                 Task { await silentRefreshDiscover() }
             }
             .onDisappear {
                 searchDebounceTask?.cancel()
+            }
+            .onChange(of: hasCloudAccess) { unlocked in
+                guard unlocked, !didLoadInitialDiscover else { return }
+                didLoadInitialDiscover = true
+                loadInitialDiscover()
             }
         }
     }
@@ -141,6 +163,87 @@ struct BookSearchView: View {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(pagePurple)
                     }
+                }
+            }
+        }
+    }
+
+    private var restrictedStateCard: some View {
+        SurfaceCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    TintedIconBadge(
+                        icon: profileStore.isLoggedIn ? "lock.shield.fill" : "message.badge.fill",
+                        size: 46,
+                        iconSize: 18,
+                        primary: pageBlue,
+                        secondary: pagePurple
+                    )
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(profileStore.isLoggedIn ? "发现页暂未开放" : "先登录再解锁发现页")
+                            .font(.title3.bold())
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        Text(profileStore.isLoggedIn ? "当前账号已登录，但还未激活。发现页和云端书籍会先锁定，本地导入内容不受影响。" : "未登录状态下仅支持本地书籍。完成短信登录并输入激活码后，才会开放公开来源和云端书籍。")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    CapsuleInfoTag(title: profileStore.isLoggedIn ? "已登录未激活" : "未登录", icon: profileStore.isLoggedIn ? "lock.fill" : "person.crop.circle.badge.xmark", tint: pageBlue)
+                    CapsuleInfoTag(title: "当前可用：本地书籍", icon: "books.vertical.fill", tint: pagePurple)
+                }
+
+                HStack(spacing: 12) {
+                    discoverLockTile(title: "云端状态", value: profileStore.isLoggedIn ? "待激活" : "未开放", icon: "sparkles", tint: pagePurple)
+                    discoverLockTile(title: "今日剩余", value: hasCloudAccess ? "\(dailyQuotaRemaining) 章" : "0 章", icon: "waveform", tint: pageBlue)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("解锁后可用")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    HStack(spacing: 8) {
+                        CapsuleInfoTag(title: "发现搜索", icon: "magnifyingglass", tint: pageBlue)
+                        CapsuleInfoTag(title: "热门排行", icon: "chart.bar.fill", tint: pagePurple)
+                        CapsuleInfoTag(title: "云端书籍", icon: "sparkles", tint: pageBlue)
+                    }
+                }
+
+                if profileStore.isLoggedIn {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("还差一步")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        HStack(spacing: 8) {
+                            CapsuleInfoTag(title: "1. 保持登录状态", icon: "person.fill.checkmark", tint: pageBlue)
+                            CapsuleInfoTag(title: "2. 去“我的”页输入激活码", icon: "ticket.fill", tint: pagePurple)
+                        }
+
+                        Text("激活完成后返回发现页，即可使用搜索、排行和云端书籍；每日额度会在“我的”页同步展示。")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                } else {
+                    Button {
+                        tabRouter.presentLogin()
+                    } label: {
+                        Label("去短信登录", systemImage: "message.fill")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(AppTheme.Colors.brandGradient)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.985))
+
+                    Text("完成短信登录后，仍需在“我的”页输入激活码，才会开放发现页与云端书籍。")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
             }
         }
@@ -415,6 +518,37 @@ struct BookSearchView: View {
             }
             .frame(maxWidth: .infinity)
         }
+    }
+
+    private func discoverLockTile(title: String, value: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TintedIconBadge(icon: icon, size: 30, iconSize: 11, primary: pageBlue, secondary: pagePurple)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            Text(value)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.74), tint.opacity(0.12)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.64), lineWidth: 1)
+                )
+        )
     }
 
     private func discoverBook(for result: BookSearchResult) -> Book {
