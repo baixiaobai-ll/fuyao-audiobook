@@ -23,6 +23,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     @Published public var currentPlaylist: Playlist?
     @Published public var config: PlaybackConfig = PlaybackConfig()
     @Published public var sleepTimerRemaining: TimeInterval? = nil
+    @Published public private(set) var lastErrorMessage: String?
 
     // MARK: - Private Properties
 
@@ -64,6 +65,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     public func load(playlist: Playlist) {
         currentPlaylist = playlist
         state = .idle
+        lastErrorMessage = nil
         hasTriggeredChapterPrefetch = false
         isAdvancingToNextChapter = false
         var restoredTime: TimeInterval = 0
@@ -153,6 +155,14 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         isAdvancingToNextChapter = false
     }
 
+    func presentPlaybackError(_ error: Error) {
+        lastErrorMessage = userFacingMessage(for: error)
+        state = .error
+        publishNowPlayingInfoCenter()
+        syncLiveActivity()
+        print("❌ 播放失败: \(lastErrorMessage ?? error.localizedDescription)")
+    }
+
     /// 播放
     public func play() {
         guard let playlist = currentPlaylist,
@@ -163,6 +173,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         ensureAudioSessionActive()
         state = .loading
+        lastErrorMessage = nil
 
         // 如果已有播放器且是同一项，直接播放
         if player != nil {
@@ -188,9 +199,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             let initialSeekTime = restoredLocalTimeIfNeeded(for: playlist.currentIndex)
             startPlayback(for: currentItem, initialSeekTime: initialSeekTime)
         } catch {
-            state = .error
-            print("❌ 播放失败: \(error.localizedDescription)")
-            syncLiveActivity()
+            presentPlaybackError(error)
         }
     }
 
@@ -209,6 +218,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         cleanupPlayer()
         state = .stopped
         progress = PlaybackProgress()
+        lastErrorMessage = nil
         saveSession()
         clearNowPlayingInfoCenter()
         syncLiveActivity()
@@ -541,9 +551,9 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 处理播放失败
     @objc private func playerItemFailedToPlay() {
-        let work = { [weak self] in
-            self?.state = .error
-            print("❌ 播放失败")
+        let work: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.presentPlaybackError(TTSError.audioProcessingError)
         }
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
@@ -872,12 +882,20 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 try await handler()
             } catch {
                 self.isAdvancingToNextChapter = false
-                self.state = .error
-                self.publishNowPlayingInfoCenter()
-                self.syncLiveActivity()
+                self.presentPlaybackError(error)
                 print("❌ 自动切换下一章失败: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func userFacingMessage(for error: Error) -> String {
+        if let accessError = error as? CloudPlaybackAccessError {
+            return accessError.errorDescription ?? error.localizedDescription
+        }
+        if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+            return localized
+        }
+        return error.localizedDescription
     }
 
     private func aggregatedTime(
