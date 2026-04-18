@@ -1,0 +1,1 @@
+"""Fuyao minimal backend package."""
