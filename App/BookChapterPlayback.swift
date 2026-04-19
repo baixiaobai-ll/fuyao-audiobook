@@ -131,10 +131,8 @@ enum BookChapterPlayback {
                             onProgressMessage: { _ in },
                             onFirstPlaybackStarted: {}
                         )
-                    }
                 }
             }
-            )
 
             final class StartedFlag {
                 var value = false
