@@ -209,10 +209,10 @@ struct BookSearchView: View {
                     )
 
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(profileStore.isLoggedIn ? "发现页暂未开放" : "先登录再解锁发现页")
+                        Text(profileStore.isLoggedIn ? "激活后解锁发现页" : "登录后解锁发现页")
                             .font(.title3.bold())
                             .foregroundStyle(AppTheme.Colors.textPrimary)
-                        Text(profileStore.isLoggedIn ? "当前账号已登录，但还未激活。发现页和云端书籍会先锁定，本地导入内容不受影响。" : "未登录状态下仅支持本地书籍。完成短信登录并输入激活码后，才会开放公开来源和云端书籍。")
+                        Text(profileStore.isLoggedIn ? "当前账号已登录，但云端能力还未解锁。发现页和云端书籍会继续锁定，本地导入内容不受影响。" : "未登录状态下仅支持本地内容。完成登录并输入激活码后，才会开放公开来源和云端书籍。")
                             .font(.footnote)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -220,12 +220,12 @@ struct BookSearchView: View {
 
                 HStack(spacing: 10) {
                     CapsuleInfoTag(title: profileStore.isLoggedIn ? "已登录未激活" : "未登录", icon: profileStore.isLoggedIn ? "lock.fill" : "person.crop.circle.badge.xmark", tint: pageBlue)
-                    CapsuleInfoTag(title: "当前可用：本地书籍", icon: "books.vertical.fill", tint: pagePurple)
+                    CapsuleInfoTag(title: "当前可用：本地内容", icon: "books.vertical.fill", tint: pagePurple)
                 }
 
                 HStack(spacing: 12) {
-                    discoverLockTile(title: "云端状态", value: profileStore.isLoggedIn ? "待激活" : "未开放", icon: "sparkles", tint: pagePurple)
-                    discoverLockTile(title: "今日剩余", value: hasCloudAccess ? "\(dailyQuotaRemaining) 章" : "0 章", icon: "waveform", tint: pageBlue)
+                    discoverLockTile(title: "云端状态", value: profileStore.isLoggedIn ? "待解锁" : "未开放", icon: "sparkles", tint: pagePurple)
+                    discoverLockTile(title: "当前可用", value: "本地内容", icon: "books.vertical.fill", tint: pageBlue)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -251,7 +251,7 @@ struct BookSearchView: View {
                             CapsuleInfoTag(title: "2. 去“我的”页输入激活码", icon: "ticket.fill", tint: pagePurple)
                         }
 
-                        Text("激活完成后返回发现页，即可使用搜索、排行和云端书籍；每日额度会在“我的”页同步展示。")
+                        Text("激活完成后返回发现页，即可使用搜索、排行和云端书籍。")
                             .font(.footnote)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -259,7 +259,7 @@ struct BookSearchView: View {
                     Button {
                         tabRouter.presentLogin()
                     } label: {
-                        Label("去短信登录", systemImage: "message.fill")
+                        Label("去登录解锁", systemImage: "person.crop.circle.badge.plus")
                             .font(.headline)
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -269,7 +269,7 @@ struct BookSearchView: View {
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.985))
 
-                    Text("完成短信登录后，仍需在“我的”页输入激活码，才会开放发现页与云端书籍。")
+                    Text("登录支持一键登录和验证码登录；完成登录后，再去“我的”页输入激活码，即可开放发现页与云端书籍。")
                         .font(.footnote)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
@@ -883,10 +883,10 @@ struct BookSearchView: View {
 
     private var discoverAccessMessage: String {
         if !profileStore.isLoggedIn {
-            return "登录后可使用发现页与云端书籍"
+            return "登录后再输入激活码，即可使用发现页与云端书籍"
         }
         if !isActivated {
-            return "激活成功后可使用发现页与云端书籍"
+            return "激活后即可使用发现页与云端书籍"
         }
         return "当前账号暂不可使用发现页"
     }
