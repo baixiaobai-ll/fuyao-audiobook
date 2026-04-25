@@ -8,36 +8,43 @@ import ATAuthSDK
 
 struct LoginView: View {
     @EnvironmentObject var profileStore: UserProfileStore
+    @EnvironmentObject var tabRouter: MainTabRouter
     @Environment(\.dismiss) private var dismiss
 
     @State private var authPhase: OneClickAuthPhase = .idle
     @State private var loginNotice: LoginNotice?
     @State private var sdkEventHistory: [OneClickSDKEvent] = []
     @State private var resolvedPresenter: UIViewController?
+    @State private var showSMSFallback = false
+    @State private var hasTriggeredInitialOneClick = false
+    @State private var smsPhone = ""
+    @State private var smsCode = ""
+    @State private var appAgreementAccepted = false
+    @State private var isSendingSMSCode = false
+    @State private var isSubmittingSMSLogin = false
+    @State private var smsCodeCountdown = 0
+    @State private var smsCountdownTask: Task<Void, Never>?
+    @State private var smsToast: LoginToast?
+    @State private var smsToastTask: Task<Void, Never>?
+    @FocusState private var focusedSMSField: SMSLoginField?
 
     private let pageBlue = Color(red: 0.52, green: 0.76, blue: 0.98)
     private let pagePurple = Color(red: 0.66, green: 0.54, blue: 0.96)
     private let pageIndigo = Color(red: 0.35, green: 0.45, blue: 0.82)
+    private let pageRose = Color(red: 0.35, green: 0.45, blue: 0.82)
+    private let softField = Color(red: 0.96, green: 0.96, blue: 0.97)
 
     var body: some View {
         NavigationStack {
             ZStack {
-                loginBackground
-
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 18) {
-                        heroCard
-
-                        if let loginNotice {
-                            statusCard(loginNotice)
-                        }
-
-                        authEntryCard
-                        flowCard
-                        tipsCard
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
+                if showSMSFallback {
+                    loginBackground
+                    smsLoginPage
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .accessibilityHidden(true)
                 }
             }
             .background(
@@ -46,12 +53,20 @@ struct LoginView: View {
                 }
                 .allowsHitTesting(false)
             )
-            .navigationBarTitleDisplayMode(.inline)
-            .tint(pageIndigo)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+            .overlay(alignment: .top) {
+                if let smsToast {
+                    toastView(smsToast)
+                        .padding(.horizontal, 28)
+                        .padding(.top, 72)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
+            }
+            .navigationBarHidden(true)
+            .tint(pageRose)
+            .animation(.spring(response: 0.34, dampingFraction: 0.86), value: showSMSFallback)
+            .animation(.spring(response: 0.26, dampingFraction: 0.86), value: smsToast?.id)
+            .onAppear {
+                configureInitialLoginPresentation()
             }
         }
     }
@@ -59,290 +74,479 @@ struct LoginView: View {
     private var loginBackground: some View {
         LinearGradient(
             colors: [
-                Color(red: 0.95, green: 0.97, blue: 1.0),
-                Color(red: 0.92, green: 0.94, blue: 1.0),
+                Color.white,
                 Color(red: 0.99, green: 0.99, blue: 1.0),
+                Color(red: 0.97, green: 0.98, blue: 1.0),
                 Color.white
             ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+            startPoint: .top,
+            endPoint: .bottom
         )
         .overlay(alignment: .topTrailing) {
             Circle()
-                .fill(pagePurple.opacity(0.18))
+                .fill(pageRose.opacity(0.08))
                 .frame(width: 220, height: 220)
-                .blur(radius: 22)
-                .offset(x: 72, y: -56)
+                .blur(radius: 28)
+                .offset(x: 94, y: -82)
         }
         .overlay(alignment: .topLeading) {
             Circle()
-                .fill(pageBlue.opacity(0.14))
+                .fill(pageBlue.opacity(0.10))
                 .frame(width: 190, height: 190)
-                .blur(radius: 20)
-                .offset(x: -68, y: -72)
+                .blur(radius: 24)
+                .offset(x: -80, y: -74)
         }
         .ignoresSafeArea()
     }
 
-    private var heroCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 14) {
-                    TintedIconBadge(icon: "iphone.gen3.radiowaves.left.and.right", size: 54, iconSize: 20, primary: pageBlue, secondary: pagePurple)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("号码认证一键登录")
-                            .font(.title2.bold())
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                        Text("使用阿里云号码认证 SDK 获取 `accessToken`，再调用后端 `POST /v1/auth/one-click/login` 完成登录。")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    CapsuleInfoTag(title: "未登录仅可用本地书籍", icon: "books.vertical.fill", tint: pageBlue)
-                    CapsuleInfoTag(title: "登录后仍需激活码", icon: "key.fill", tint: pagePurple)
-                }
-            }
-        }
-    }
-
-    private func statusCard(_ notice: LoginNotice) -> some View {
-        SurfaceCard {
-            HStack(spacing: 12) {
-                TintedIconBadge(
-                    icon: notice.kind == .success ? "checkmark.shield.fill" : "bolt.horizontal.circle.fill",
-                    size: 38,
-                    iconSize: 14,
-                    primary: notice.kind == .success ? pagePurple : pageBlue,
-                    secondary: pageIndigo
-                )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(notice.title)
-                        .font(.subheadline.bold())
+    private var smsLoginPage: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    tabRouter.dismissLogin()
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 26, weight: .medium))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text(notice.message)
-                        .font(.footnote)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-            }
-        }
-    }
+                .buttonStyle(LiftPressButtonStyle(scale: 0.94))
 
-    private var authEntryCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 16) {
-                SoftSectionHeader(title: "一键登录入口", subtitle: "号码认证 SDK 先取 accessToken，再交给后端换取会话")
-
-                HStack(spacing: 12) {
-                    authMetric(title: "当前链路", value: "号码认证", icon: "lock.iphone")
-                    authMetric(title: "状态", value: authPhase.displayText, icon: authPhase.icon)
-                }
+                Spacer()
 
                 Button {
-                    startOneClickLogin()
+                    loginNotice = LoginNotice(
+                        title: "短信验证码登录",
+                        message: "请输入手机号，发送验证码后使用短信验证码完成登录。未注册手机号验证通过后会自动注册。",
+                        kind: .info
+                    )
                 } label: {
-                    HStack(spacing: 10) {
-                        if authPhase.isLoading {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "iphone.gen3.radiowaves.left.and.right.circle.fill")
-                                .font(.headline)
-                        }
+                    Text("帮助")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .frame(height: 44)
+                }
+                .buttonStyle(LiftPressButtonStyle(scale: 0.96))
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 12)
 
-                        Text(authPhase.buttonTitle)
-                            .font(.headline)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 26) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("登录后，体验完整功能")
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        Text("未注册的手机号验证通过后将自动注册")
+                            .font(.system(size: 17, weight: .regular))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 15)
-                    .background(AppTheme.Colors.brandGradient)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
-                .buttonStyle(LiftPressButtonStyle(scale: 0.985))
-                .disabled(authPhase.isLoading)
-                .opacity(authPhase.isLoading ? 0.78 : 1)
+                    .padding(.top, 28)
 
-                if authPhase == .fallbackOptions {
-                    fallbackFlowCard
-                }
+                    VStack(spacing: 14) {
+                        phoneInputField
+                        smsCodeInputField
+                    }
 
-                Text("当前正式链路：SDK 鉴权并拉起授权页，拿到 `accessToken` 后调用 `POST /v1/auth/one-click/login`，再同步本地登录态、激活态与每日额度。")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                if let latestSDKEvent = sdkEventHistory.last {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("最近 SDK 回调：[\(latestSDKEvent.stage)] \(latestSDKEvent.code) \(latestSDKEvent.message)")
-                            .font(.caption2)
-                            .foregroundStyle(pagePurple.opacity(0.92))
-
-                        if sdkEventHistory.count > 1 {
-                            ForEach(Array(sdkEventHistory.suffix(8).dropLast().enumerated()), id: \.offset) { _, event in
-                                Text("此前：[\(event.stage)] \(event.code) \(event.message)")
-                                    .font(.caption2)
-                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    Button {
+                        submitSMSLoginFromPage()
+                    } label: {
+                        HStack(spacing: 10) {
+                            if isSubmittingSMSLogin {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(isSubmittingSMSLogin ? "正在登录..." : "验证并登录")
+                                .font(.system(size: 18, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [pageBlue, pagePurple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                            if !canSubmitSMSLogin {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.48))
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.gray.opacity(0.16))
                             }
                         }
                     }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.985))
+                    .disabled(!canSubmitSMSLogin || isSubmittingSMSLogin)
+                    .padding(.top, 4)
+
+                    smsAgreementRow(prefix: "已阅读并同意")
+
+                    if let loginNotice {
+                        compactNotice(loginNotice)
+                    }
+
+                    Spacer(minLength: 180)
                 }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 28)
             }
         }
     }
 
-    private var fallbackFlowCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("其他登录方式回退")
-                .font(.subheadline.weight(.semibold))
+    private var phoneInputField: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Text("+86")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+            }
+
+            Rectangle()
+                .fill(AppTheme.Colors.textSecondary.opacity(0.30))
+                .frame(width: 1, height: 24)
+
+            TextField("请输入手机号", text: $smsPhone)
+                .keyboardType(.numberPad)
+                .textContentType(.telephoneNumber)
+                .focused($focusedSMSField, equals: .phone)
+                .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
-
-            Text("你刚刚点击了授权页里的“切换其他方式”。当前我们会先回到扶摇自己的登录页，再由这里决定下一步，而不是停留在 SDK 默认行为里。")
-                .font(.footnote)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-
-            HStack(spacing: 10) {
-                Button {
-                    startOneClickLogin()
-                } label: {
-                    Text("继续一键登录")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(AppTheme.Colors.brandGradient)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .onChange(of: smsPhone) { newValue in
+                    smsPhone = String(newValue.filter(\.isNumber).prefix(11))
                 }
-                .buttonStyle(LiftPressButtonStyle(scale: 0.985))
-
-                Button {
-                    dismiss()
-                } label: {
-                    Text("暂时返回应用")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(pageIndigo)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(Color.white.opacity(0.82))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .stroke(pagePurple.opacity(0.25), lineWidth: 1)
-                                )
-                        )
-                }
-                .buttonStyle(LiftPressButtonStyle(scale: 0.985))
-            }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.84), pageBlue.opacity(0.10)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.64), lineWidth: 1)
-                )
-        )
-    }
-
-    private var flowCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
-                SoftSectionHeader(title: "认证流程", subtitle: "按当前后端的一键登录协议组织前端状态")
-
-                VStack(spacing: 10) {
-                    flowRow(step: "1", title: "SDK 鉴权", subtitle: "读取本地 `NUMBER_AUTH_SDK_INFO` 初始化阿里云号码认证 SDK")
-                    flowRow(step: "2", title: "检查当前环境", subtitle: "确认设备、SIM 卡和蜂窝网络支持一键登录")
-                    flowRow(step: "3", title: "拉起授权页", subtitle: "展示号码认证授权页，用户确认后发起登录")
-                    flowRow(step: "4", title: "获取 accessToken", subtitle: "SDK 成功回调返回一键登录 token")
-                    flowRow(step: "5", title: "提交后端完成登录", subtitle: "客户端调用 `POST /v1/auth/one-click/login` 换取会话与权益")
-                }
-            }
+        .padding(.horizontal, 18)
+        .frame(height: 64)
+        .background(softField)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focusedSMSField = .phone
         }
     }
 
-    private var tipsCard: some View {
-        SurfaceCard {
-            VStack(alignment: .leading, spacing: 10) {
-                SoftSectionHeader(title: "登录提示", subtitle: "一键登录只负责拿到本机登录凭证，云端权限仍由激活码控制")
-
-                HStack(spacing: 8) {
-                    CapsuleInfoTag(title: "失败态可直接回显", icon: "sparkles", tint: pageBlue)
-                    CapsuleInfoTag(title: "登录后仍需激活码", icon: "ticket.fill", tint: pagePurple)
-                }
-
-                Text("登录成功后，如果账号尚未激活，仍只能使用本地书籍。输入激活码后，才会开放发现页和云端书籍，并展示每日额度。")
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
-        }
-    }
-
-    private func authMetric(title: String, value: String, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                TintedIconBadge(icon: icon, size: 30, iconSize: 11, primary: pageBlue, secondary: pagePurple)
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
-
-            Text(value)
-                .font(.headline.weight(.semibold))
+    private var smsCodeInputField: some View {
+        HStack(spacing: 12) {
+            TextField("请输入验证码", text: $smsCode)
+                .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .focused($focusedSMSField, equals: .code)
+                .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+                .onChange(of: smsCode) { newValue in
+                    smsCode = String(newValue.filter(\.isNumber).prefix(8))
+                }
+
+            Button {
+                sendSMSCode()
+            } label: {
+                Text(sendCodeButtonTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(canSendSMSCode ? pageRose : AppTheme.Colors.textSecondary)
+                    .frame(minWidth: 86, alignment: .trailing)
+            }
+            .buttonStyle(LiftPressButtonStyle(scale: 0.96))
+            .disabled(!canSendSMSCode)
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 64)
+        .background(softField)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focusedSMSField = .code
+        }
+    }
+
+    private func smsAgreementRow(prefix: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Button {
+                appAgreementAccepted.toggle()
+            } label: {
+                Image(systemName: appAgreementAccepted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(appAgreementAccepted ? pageRose : AppTheme.Colors.textSecondary.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+
+            (
+                Text("\(prefix) ")
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                + Text("《用户服务协议》、《隐私政策》")
+                    .foregroundColor(pageRose)
+                + Text(" 并授权扶摇完成验证码登录")
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            )
+            .font(.system(size: 12, weight: .medium))
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.74), pagePurple.opacity(0.12)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.64), lineWidth: 1)
-                )
-        )
     }
 
-    private func flowRow(step: String, title: String, subtitle: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(step)
-                .font(.caption.bold())
-                .foregroundStyle(.white)
-                .frame(width: 24, height: 24)
-                .background(
-                    LinearGradient(
-                        colors: [pageBlue, pagePurple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    in: Circle()
-                )
+    private func compactNotice(_ notice: LoginNotice) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: notice.kind == .success ? "checkmark.circle.fill" : "info.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(notice.kind == .success ? Color.green : pageRose)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
+                Text(notice.title)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                Text(subtitle)
+                Text(notice.message)
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(pageRose.opacity(0.12), lineWidth: 1)
+                )
+        )
+    }
 
+    private func toastView(_ toast: LoginToast) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: toast.kind == .success ? "checkmark.circle.fill" : "info.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(toast.kind == .success ? Color.green : pageRose)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(toast.title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                if !toast.message.isEmpty {
+                    Text(toast.message)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(2)
+                }
+            }
             Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.96))
+                .shadow(color: Color.black.opacity(0.08), radius: 18, x: 0, y: 8)
+        )
+    }
+
+    private var normalizedSMSPhone: String {
+        smsPhone.filter(\.isNumber)
+    }
+
+    private var canSendSMSCode: Bool {
+        !isSendingSMSCode && smsCodeCountdown == 0 && normalizedSMSPhone.count == 11
+    }
+
+    private var canSubmitSMSLogin: Bool {
+        normalizedSMSPhone.count == 11 && !smsCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var sendCodeButtonTitle: String {
+        if isSendingSMSCode { return "发送中..." }
+        if smsCodeCountdown > 0 { return "\(smsCodeCountdown)s" }
+        return "发送验证码"
+    }
+
+    private var smsStatusText: String {
+        if isSubmittingSMSLogin { return "登录中" }
+        if isSendingSMSCode { return "发送验证码中" }
+        if smsCodeCountdown > 0 { return "验证码已发送" }
+        return "待发送"
+    }
+
+    private var smsStatusIcon: String {
+        if isSubmittingSMSLogin { return "checkmark.circle.fill" }
+        if isSendingSMSCode { return "paperplane.fill" }
+        if smsCodeCountdown > 0 { return "timer" }
+        return "message.badge.fill"
+    }
+
+    private func configureInitialLoginPresentation() {
+        switch tabRouter.loginPresentationMode {
+        case .sms:
+            showSMSFallback = true
+        case .oneClick:
+            showSMSFallback = false
+            startInitialOneClickLoginIfNeeded()
+        }
+    }
+
+    private func startInitialOneClickLoginIfNeeded() {
+        guard !hasTriggeredInitialOneClick else { return }
+        hasTriggeredInitialOneClick = true
+        loginNotice = nil
+
+        Task { @MainActor in
+            startOneClickLogin()
+        }
+    }
+
+    private func submitSMSLoginFromPage() {
+        guard ensureAgreementAccepted() else { return }
+        submitSMSLogin()
+    }
+
+    private func ensureAgreementAccepted() -> Bool {
+        guard appAgreementAccepted else {
+            loginNotice = LoginNotice(
+                title: "请先同意协议",
+                message: "请阅读并勾选用户服务协议与隐私政策后继续登录。",
+                kind: .info
+            )
+            return false
+        }
+        return true
+    }
+
+    private func showSMSToast(title: String, message: String, kind: LoginToast.Kind = .info) {
+        smsToastTask?.cancel()
+        withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+            smsToast = LoginToast(title: title, message: message, kind: kind)
+        }
+        smsToastTask = Task {
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    smsToast = nil
+                }
+            }
+        }
+    }
+
+    private func sendSMSCode() {
+        guard canSendSMSCode else { return }
+        let phone = normalizedSMSPhone
+        isSendingSMSCode = true
+        print("[SMSLogin] stage=发送验证码 code=CLIENT_SMS_SEND_START message=phone=\(phone)")
+
+        Task {
+            do {
+                let responseMessage = try await SMSAuthAPIClient.sendCode(phone: phone)
+                await MainActor.run {
+                    loginNotice = nil
+                    focusedSMSField = .code
+                    showSMSToast(title: "验证码已发送", message: responseMessage, kind: .success)
+                    startSMSCodeCountdown()
+                }
+            } catch let error as SMSAuthError {
+                await MainActor.run {
+                    loginNotice = LoginNotice(
+                        title: "验证码发送失败",
+                        message: error.localizedDescription,
+                        kind: .info
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    loginNotice = LoginNotice(
+                        title: "验证码发送失败",
+                        message: error.localizedDescription,
+                        kind: .info
+                    )
+                }
+            }
+
+            await MainActor.run {
+                isSendingSMSCode = false
+            }
+        }
+    }
+
+    private func submitSMSLogin() {
+        guard canSubmitSMSLogin, !isSubmittingSMSLogin else { return }
+        let phone = normalizedSMSPhone
+        let code = smsCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSubmittingSMSLogin = true
+        print("[SMSLogin] stage=验证码登录 code=CLIENT_SMS_LOGIN_START message=phone=\(phone)")
+
+        Task {
+            do {
+                let loginPayload = try await SMSAuthAPIClient.login(phone: phone, code: code)
+                await MainActor.run {
+                    profileStore.applyLoginSuccess(
+                        phone: loginPayload.phone,
+                        nickname: loginPayload.nickname,
+                        userId: loginPayload.userId,
+                        sessionToken: loginPayload.sessionToken,
+                        activationStatusRaw: loginPayload.activationStatusRaw,
+                        activationPlanName: loginPayload.activationPlanName,
+                        dailyQuotaTotal: loginPayload.dailyQuotaTotal,
+                        dailyQuotaUsed: loginPayload.dailyQuotaUsed,
+                        dailyQuotaRemaining: loginPayload.dailyQuotaRemaining,
+                        dailyQuotaResetText: loginPayload.dailyQuotaResetText,
+                        activationExpiryText: loginPayload.activationExpiryText
+                    )
+
+                    loginNotice = LoginNotice(
+                        title: "验证码登录成功",
+                        message: loginPayload.activationStatusRaw == "active"
+                            ? "账号已登录且云端能力已解锁，权益展示会直接沿用当前真实状态契约。"
+                            : "账号已完成登录。若尚未激活，仍需回到“我的”页输入激活码解锁发现页与云端书籍。",
+                        kind: .success
+                    )
+                    showSMSFallback = false
+                    smsCode = ""
+                    dismiss()
+                }
+            } catch let error as SMSAuthError {
+                await MainActor.run {
+                    loginNotice = LoginNotice(
+                        title: "验证码登录失败",
+                        message: error.localizedDescription,
+                        kind: .info
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    loginNotice = LoginNotice(
+                        title: "验证码登录失败",
+                        message: error.localizedDescription,
+                        kind: .info
+                    )
+                }
+            }
+
+            await MainActor.run {
+                isSubmittingSMSLogin = false
+            }
+        }
+    }
+
+    private func startSMSCodeCountdown() {
+        smsCountdownTask?.cancel()
+        smsCodeCountdown = 60
+        smsCountdownTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    if smsCodeCountdown > 0 {
+                        smsCodeCountdown -= 1
+                    }
+                }
+                if smsCodeCountdown == 0 {
+                    return
+                }
+            }
         }
     }
 
@@ -422,8 +626,8 @@ struct LoginView: View {
                     loginNotice = LoginNotice(
                         title: "一键登录成功",
                         message: loginPayload.activationStatusRaw == "active"
-                            ? "账号已登录且云端权限已激活，Profile 页会同步展示每日额度、剩余额度和有效期。"
-                            : "账号已完成登录。若尚未激活，仍只能使用本地书籍，可前往“我的”页继续输入激活码。",
+                            ? "账号已登录且云端能力已解锁，“我的”页会同步更新当前状态。"
+                            : "账号已完成登录。若尚未激活，仍只能使用本地内容，可前往“我的”页继续输入激活码。",
                         kind: .success
                     )
                     dismiss()
@@ -433,18 +637,25 @@ struct LoginView: View {
                 await MainActor.run {
                     if let authError = error as? OneClickAuthError, authError == .fallbackRequested {
                         authPhase = .fallbackOptions
+                        showSMSFallback = true
                         loginNotice = LoginNotice(
                             title: "已切换到其他方式",
-                            message: "SDK 授权页已经关闭，当前已回到扶摇自己的登录页。你可以重新发起一键登录，或暂时返回应用。",
+                            message: "SDK 授权页已经关闭，当前已切到短信验证码登录。",
                             kind: .info
                         )
+                        tabRouter.presentLogin(mode: .sms)
+                    } else if let authError = error as? OneClickAuthError, authError == .cancelled {
+                        tabRouter.dismissLogin()
+                        dismiss()
                     } else {
+                        showSMSFallback = true
                         loginNotice = LoginNotice(
                             title: "一键登录未完成",
-                            message: error.localizedDescription,
+                            message: "\(error.localizedDescription) 你可以先使用短信验证码登录。",
                             kind: .info
                         )
                         authPhase = .idle
+                        tabRouter.presentLogin(mode: .sms)
                     }
                 }
             }
@@ -545,9 +756,11 @@ struct LoginView: View {
             )
         case "700001":
             authPhase = .fallbackOptions
+            showSMSFallback = true
+            tabRouter.loginPresentationMode = .sms
             loginNotice = LoginNotice(
                 title: "已点击切换其他方式",
-                message: "已收到 SDK 的 700001 回调，授权页将关闭并回到扶摇自己的登录页。",
+                message: "已收到 SDK 的 700001 回调，授权页将关闭并回到扶摇自己的登录页。当前可直接改用短信验证码登录。",
                 kind: .info
             )
         default:
@@ -594,9 +807,140 @@ struct LoginView: View {
         }
 
         dismiss()
+        tabRouter.dismissLogin()
         #endif
     }
 }
+
+#if canImport(UIKit)
+struct OneClickLoginLauncher: View {
+    @EnvironmentObject var profileStore: UserProfileStore
+    @EnvironmentObject var tabRouter: MainTabRouter
+
+    @State private var resolvedPresenter: UIViewController?
+    @State private var isLaunching = false
+
+    var body: some View {
+        LoginPresenterResolver { controller in
+            resolvedPresenter = controller
+            launchIfNeeded()
+        }
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
+        .onAppear {
+            launchIfNeeded()
+        }
+        .onChange(of: tabRouter.isLoginPresented) { _ in
+            launchIfNeeded()
+        }
+        .onChange(of: tabRouter.loginPresentationMode) { _ in
+            launchIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func launchIfNeeded() {
+        guard tabRouter.isLoginPresented,
+              tabRouter.loginPresentationMode == .oneClick,
+              !profileStore.isLoggedIn,
+              !isLaunching else {
+            return
+        }
+
+        isLaunching = true
+        tabRouter.dismissLogin()
+
+        Task {
+            await startOneClickLogin()
+        }
+    }
+
+    @MainActor
+    private func startOneClickLogin() async {
+        defer {
+            isLaunching = false
+        }
+
+        do {
+            let presenter = try await resolvePresenter()
+            let sdkResult = try await OneClickAuthSDKBridge.startLogin(
+                presenter: presenter,
+                onProgress: { _ in },
+                onEvent: { event in
+                    print("[OneClickLogin] stage=\(event.stage) code=\(event.code) message=\(event.message)")
+                }
+            )
+
+            let loginPayload = try await OneClickAuthAPIClient.login(accessToken: sdkResult.accessToken)
+            profileStore.applyLoginSuccess(
+                phone: loginPayload.phone,
+                nickname: loginPayload.nickname,
+                userId: loginPayload.userId,
+                sessionToken: loginPayload.sessionToken,
+                activationStatusRaw: loginPayload.activationStatusRaw,
+                activationPlanName: loginPayload.activationPlanName,
+                dailyQuotaTotal: loginPayload.dailyQuotaTotal,
+                dailyQuotaUsed: loginPayload.dailyQuotaUsed,
+                dailyQuotaRemaining: loginPayload.dailyQuotaRemaining,
+                dailyQuotaResetText: loginPayload.dailyQuotaResetText,
+                activationExpiryText: loginPayload.activationExpiryText
+            )
+        } catch {
+            print("[OneClickLogin] stage=登录结果 code=CLIENT_LOGIN_FLOW_ERROR message=\(error.localizedDescription)")
+
+            if let authError = error as? OneClickAuthError {
+                switch authError {
+                case .fallbackRequested:
+                    tabRouter.presentLogin(mode: .sms)
+                case .cancelled:
+                    tabRouter.dismissLogin()
+                default:
+                    tabRouter.presentLogin(mode: .sms)
+                }
+            } else {
+                tabRouter.presentLogin(mode: .sms)
+            }
+        }
+    }
+
+    @MainActor
+    private func resolvePresenter() async throws -> UIViewController {
+        let deadline = Date().addingTimeInterval(1.2)
+
+        while Date() < deadline {
+            if let presenter = preferredPresenter() {
+                return presenter
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        throw OneClickAuthError.missingPresenter
+    }
+
+    @MainActor
+    private func preferredPresenter() -> UIViewController? {
+        if let resolvedPresenter {
+            if let root = resolvedPresenter.view.window?.rootViewController {
+                return root.topMostPresentedControllerIfAvailable
+            }
+            return resolvedPresenter.topMostPresentedControllerIfAvailable
+        }
+
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController?
+            .topMostPresentedControllerIfAvailable
+    }
+}
+#else
+struct OneClickLoginLauncher: View {
+    var body: some View {
+        EmptyView()
+    }
+}
+#endif
 
 private enum OneClickAuthPhase {
     case idle
@@ -659,6 +1003,23 @@ private enum OneClickAuthPhase {
         case .success: return "person.crop.circle.badge.checkmark"
         }
     }
+}
+
+private enum SMSLoginField: Hashable {
+    case phone
+    case code
+}
+
+private struct LoginToast {
+    enum Kind {
+        case info
+        case success
+    }
+
+    let id = UUID()
+    let title: String
+    let message: String
+    let kind: Kind
 }
 
 private struct LoginNotice {
@@ -751,17 +1112,37 @@ private enum OneClickAuthError: LocalizedError, Equatable {
     }
 }
 
-private enum OneClickAuthAPIClient {
-    static func login(accessToken: String) async throws -> OneClickLoginPayload {
-        let body: [String: Any] = [
-            "accessToken": accessToken,
-            "token": accessToken,
-            "loginType": "one_click"
-        ]
+private enum SMSAuthError: LocalizedError, Equatable {
+    case missingBaseURL
+    case invalidPhone
+    case invalidCode
+    case invalidResponse(String)
+    case server(String)
+    case transport(String)
+    case endpointUnavailable(String)
 
-        let data = try await request(path: "v1/auth/one-click/login", method: "POST", jsonBody: body)
-        let json = try parseJSON(data)
+    var errorDescription: String? {
+        switch self {
+        case .missingBaseURL:
+            return "未配置认证服务地址，请检查 `AUTH_API_BASE_URL` 或 `DISCOVER_API_BASE_URL`。"
+        case .invalidPhone:
+            return "请输入正确的 11 位手机号。"
+        case .invalidCode:
+            return "请输入正确的短信验证码。"
+        case .invalidResponse(let message):
+            return "短信认证接口返回格式无法识别：\(message)"
+        case .server(let message):
+            return message
+        case .transport(let message):
+            return message
+        case .endpointUnavailable(let message):
+            return message
+        }
+    }
+}
 
+private enum AuthLoginPayloadParser {
+    static func parse(_ json: Any) throws -> OneClickLoginPayload {
         let user = firstObject(in: json, keys: ["user", "userInfo", "account", "profile"]) ?? json
         let entitlement = firstObject(in: json, keys: ["entitlement", "member", "membership", "plan", "rights"]) ?? json
         let permissions = firstObject(in: json, keys: ["permissions", "perms", "abilities"]) ?? json
@@ -793,6 +1174,277 @@ private enum OneClickAuthAPIClient {
             dailyQuotaResetText: firstString(in: quota, keys: ["dailyQuotaResetText", "resetText", "resetAt", "refreshAt"]),
             activationExpiryText: firstString(in: entitlement, keys: ["activationExpiryText", "expireAt", "expiredAt", "expiryDate", "validUntil"])
         )
+    }
+
+    static func parseJSON(_ data: Data) throws -> Any {
+        do {
+            return try JSONSerialization.jsonObject(with: data)
+        } catch {
+            if let raw = String(data: data, encoding: .utf8), !raw.isEmpty {
+                throw OneClickAuthError.invalidResponse(raw)
+            }
+            throw OneClickAuthError.invalidResponse(error.localizedDescription)
+        }
+    }
+
+    static func firstObject(in value: Any, keys: [String], depth: Int = 4) -> Any? {
+        guard depth >= 0 else { return nil }
+
+        if let dict = value as? [String: Any] {
+            for key in keys {
+                if let nested = dict[key] {
+                    return nested
+                }
+            }
+
+            for nestedKey in ["data", "result", "payload", "response"] {
+                if let nested = dict[nestedKey],
+                   let result = firstObject(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func firstString(in value: Any, keys: [String], depth: Int = 5) -> String? {
+        guard depth >= 0 else { return nil }
+
+        if let dict = value as? [String: Any] {
+            for key in keys {
+                if let raw = dict[key] as? String,
+                   !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if let raw = dict[key] as? NSNumber {
+                    return raw.stringValue
+                }
+            }
+
+            for nestedKey in ["data", "result", "model", "payload", "user", "userInfo", "account", "profile", "entitlement", "permissions", "quota"] {
+                if let nested = dict[nestedKey],
+                   let result = firstString(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+
+            for nested in dict.values {
+                if let result = firstString(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+
+        if let array = value as? [Any] {
+            for item in array {
+                if let result = firstString(in: item, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func firstInt(in value: Any, keys: [String], depth: Int = 5) -> Int? {
+        guard depth >= 0 else { return nil }
+
+        if let dict = value as? [String: Any] {
+            for key in keys {
+                if let raw = dict[key] as? Int { return raw }
+                if let raw = dict[key] as? NSNumber { return raw.intValue }
+                if let raw = dict[key] as? String,
+                   let intValue = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    return intValue
+                }
+            }
+
+            for nestedKey in ["data", "result", "model", "payload", "entitlement", "quota", "usage"] {
+                if let nested = dict[nestedKey],
+                   let result = firstInt(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func firstBool(in value: Any, keys: [String], depth: Int = 5) -> Bool? {
+        guard depth >= 0 else { return nil }
+
+        if let dict = value as? [String: Any] {
+            for key in keys {
+                if let raw = dict[key] as? Bool { return raw }
+                if let raw = dict[key] as? NSNumber { return raw.boolValue }
+                if let raw = dict[key] as? String {
+                    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                    case "true", "1", "yes", "enabled", "active":
+                        return true
+                    case "false", "0", "no", "disabled", "inactive":
+                        return false
+                    default:
+                        break
+                    }
+                }
+            }
+
+            for nestedKey in ["data", "result", "payload", "permissions", "entitlement", "user"] {
+                if let nested = dict[nestedKey],
+                   let result = firstBool(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+
+        return nil
+    }
+
+    static func normalizeActivationStatus(raw: String?, permissions: Any, root: Any) -> String {
+        if let raw {
+            switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "active", "activated", "valid", "enabled", "success":
+                return "active"
+            case "expired", "expire", "invalid":
+                return "expired"
+            case "inactive", "pending", "locked", "none":
+                return "inactive"
+            default:
+                break
+            }
+        }
+
+        let permissionKeys = [
+            "canUseDiscover", "discoverEnabled", "canUseCloudBooks", "cloudBooksEnabled",
+            "canUseRemoteBooks", "cloudEnabled", "activated", "isActivated", "hasCloudAccess"
+        ]
+        if let hasCloudAccess = firstBool(in: permissions, keys: permissionKeys)
+            ?? firstBool(in: root, keys: permissionKeys) {
+            return hasCloudAccess ? "active" : "inactive"
+        }
+        return "inactive"
+    }
+}
+
+private enum SMSAuthAPIClient {
+    private static let sendCodePath = "v1/auth/send-code"
+    private static let loginPath = "v1/auth/login"
+
+    static func sendCode(phone: String) async throws -> String {
+        guard phone.count == 11 else { throw SMSAuthError.invalidPhone }
+
+        let body: [String: Any] = [
+            "phone": phone
+        ]
+
+        let data = try await request(path: sendCodePath, jsonBody: body)
+        let json = try parseJSON(data)
+        return AuthLoginPayloadParser.firstString(in: json, keys: ["message", "msg", "detail"])
+            ?? "验证码已发送，请留意短信。"
+    }
+
+    static func login(phone: String, code: String) async throws -> OneClickLoginPayload {
+        guard phone.count == 11 else { throw SMSAuthError.invalidPhone }
+        guard !code.isEmpty else { throw SMSAuthError.invalidCode }
+
+        let body: [String: Any] = [
+            "phone": phone,
+            "code": code
+        ]
+
+        let data = try await request(path: loginPath, jsonBody: body)
+        let json = try parseJSON(data)
+        return try AuthLoginPayloadParser.parse(json)
+    }
+
+    private static func request(path: String, jsonBody: [String: Any]) async throws -> Data {
+        guard let base = Config.authAPIBaseURL else {
+            throw SMSAuthError.missingBaseURL
+        }
+
+        let trimmed = base
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty, let baseURL = URL(string: trimmed) else {
+            throw SMSAuthError.missingBaseURL
+        }
+
+        let url = baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+
+        print("[SMSLogin] stage=请求后端 code=CLIENT_SMS_REQUEST message=POST \(url.absoluteString)")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw SMSAuthError.invalidResponse("缺少 HTTP 状态码")
+            }
+
+            guard (200...299).contains(http.statusCode) else {
+                let json = try? parseJSON(data)
+                let message = json.flatMap {
+                    AuthLoginPayloadParser.firstString(in: $0, keys: ["message", "msg", "error", "errorMessage", "detail"])
+                } ?? "短信认证服务返回 \(http.statusCode)"
+                throw SMSAuthError.server(message)
+            }
+
+            return data
+        } catch let error as SMSAuthError {
+            throw error
+        } catch let error as URLError {
+            throw SMSAuthError.transport(describeTransportError(error, url: url))
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain {
+                let code = URLError.Code(rawValue: nsError.code)
+                let urlError = URLError(code)
+                throw SMSAuthError.transport(describeTransportError(urlError, url: url))
+            }
+            throw SMSAuthError.transport(error.localizedDescription)
+        }
+    }
+
+    private static func parseJSON(_ data: Data) throws -> Any {
+        do {
+            return try JSONSerialization.jsonObject(with: data)
+        } catch {
+            if let raw = String(data: data, encoding: .utf8), !raw.isEmpty {
+                throw SMSAuthError.invalidResponse(raw)
+            }
+            throw SMSAuthError.invalidResponse(error.localizedDescription)
+        }
+    }
+
+    private static func describeTransportError(_ error: URLError, url: URL) -> String {
+        let host = url.host ?? url.absoluteString
+
+        switch error.code {
+        case .notConnectedToInternet:
+            return "当前网络不可用，无法访问短信认证服务 `\(host)`。请检查手机联网状态后重试。"
+        case .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .timedOut:
+            return "无法连接短信认证服务 `\(host)`。请确认后端服务已启动，且地址与端口可以从真机访问。"
+        default:
+            return "调用短信认证服务 `\(host)` 失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private enum OneClickAuthAPIClient {
+    static func login(accessToken: String) async throws -> OneClickLoginPayload {
+        let body: [String: Any] = [
+            "accessToken": accessToken,
+            "token": accessToken,
+            "loginType": "one_click"
+        ]
+
+        let data = try await request(path: "v1/auth/one-click/login", method: "POST", jsonBody: body)
+        let json = try parseJSON(data)
+        return try AuthLoginPayloadParser.parse(json)
     }
 
     private static func request(
@@ -1348,30 +2000,108 @@ private final class OneClickAuthSDKSession {
 
     private func buildCustomModel() -> TXCustomModel {
         let model = TXCustomModel()
+        let brandBlue = UIColor(red: 0.52, green: 0.76, blue: 0.98, alpha: 1)
+        let brandPurple = UIColor(red: 0.66, green: 0.54, blue: 0.96, alpha: 1)
         let indigo = UIColor(red: 0.35, green: 0.45, blue: 0.82, alpha: 1)
+        let disabledBlue = UIColor(red: 0.75, green: 0.83, blue: 0.96, alpha: 1)
+        let highlightedPurple = UIColor(red: 0.53, green: 0.43, blue: 0.84, alpha: 1)
+        let softGray = UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1)
+        let buttonHorizontalInset: CGFloat = 40
+        let buttonHeight: CGFloat = 52
+        let buttonCornerRadius: CGFloat = 18
+        let numberY: CGFloat = 310
+        let loginButtonY: CGFloat = 366
+        let changeButtonY: CGFloat = 426
+        let privacyY: CGFloat = 492
+        let numberFont = UIFont.systemFont(ofSize: 28, weight: .semibold)
+        let estimatedNumberWidth = ("156****8597" as NSString).size(withAttributes: [.font: numberFont]).width + 16
+        var changeButtonBackgroundView: UIView?
+        weak var customHostView: UIView?
+        let centeredTitleParagraph = NSMutableParagraphStyle()
+        centeredTitleParagraph.alignment = .center
 
         model.prefersStatusBarHidden = false
         model.preferredStatusBarStyle = .darkContent
         model.navColor = .white
         model.navTitle = NSAttributedString(
-            string: "扶摇一键登录",
+            string: "",
             attributes: [
                 .foregroundColor: indigo,
                 .font: UIFont.systemFont(ofSize: 18, weight: .semibold)
             ]
         )
-        if let backImage = UIImage(systemName: "chevron.left") {
+        let backSymbolConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .medium)
+        if let backImage = UIImage(systemName: "chevron.left", withConfiguration: backSymbolConfig)?
+            .withTintColor(.black, renderingMode: .alwaysOriginal) {
             model.navBackImage = backImage
+        }
+        model.navBackButtonFrameBlock = { _, _, frame in
+            CGRect(x: 22, y: frame.origin.y, width: 44, height: 44)
         }
         model.backgroundColor = UIColor.systemBackground
         model.logoIsHidden = true
-        model.sloganIsHidden = true
+        model.sloganIsHidden = false
+        model.sloganText = NSAttributedString(
+            string: "登录扶摇畅听世界",
+            attributes: [
+                .foregroundColor: UIColor.black,
+                .font: UIFont.systemFont(ofSize: 30, weight: .bold),
+                .paragraphStyle: centeredTitleParagraph
+            ]
+        )
+        model.sloganFrameBlock = { screenSize, superViewSize, frame in
+            let width = max(superViewSize.width, screenSize.width)
+            return CGRect(x: 28, y: 108, width: width - 56, height: 42)
+        }
         model.numberColor = .black
-        model.numberFont = UIFont.systemFont(ofSize: 24, weight: .semibold)
+        model.numberFont = numberFont
+        model.numberFrameBlock = { screenSize, superViewSize, frame in
+            let width = max(superViewSize.width, screenSize.width)
+            let textWidth = min(estimatedNumberWidth, width)
+            let x = max((width - textWidth) / 2, 0)
+            return CGRect(x: x, y: numberY, width: textWidth, height: max(frame.height, 34))
+        }
+        model.loginBtnText = NSAttributedString(
+            string: "本机号码一键登录",
+            attributes: [
+                .foregroundColor: UIColor.white,
+                .font: UIFont.systemFont(ofSize: 18, weight: .semibold)
+            ]
+        )
+        model.loginBtnBgImgs = [
+            makeButtonImage(colors: [brandBlue, brandPurple], cornerRadius: buttonCornerRadius),
+            makeButtonImage(colors: [disabledBlue, disabledBlue], cornerRadius: buttonCornerRadius),
+            makeButtonImage(colors: [indigo, highlightedPurple], cornerRadius: buttonCornerRadius)
+        ]
+        model.loginBtnFrameBlock = { screenSize, superViewSize, frame in
+            let width = max(superViewSize.width, screenSize.width)
+            return CGRect(
+                x: buttonHorizontalInset,
+                y: loginButtonY,
+                width: width - buttonHorizontalInset * 2,
+                height: buttonHeight
+            )
+        }
         model.showLoginLoading = true
         model.autoHideLoginLoading = true
         model.checkBoxIsChecked = true
         model.changeBtnIsHidden = false
+        model.changeBtnTitle = NSAttributedString(
+            string: "验证码登录",
+            attributes: [
+                .foregroundColor: indigo,
+                .font: UIFont.systemFont(ofSize: 16, weight: .semibold)
+            ]
+        )
+        model.changeBtnFrameBlock = { screenSize, superViewSize, frame in
+            let width = max(superViewSize.width, screenSize.width)
+            return CGRect(
+                x: buttonHorizontalInset,
+                y: changeButtonY,
+                width: width - buttonHorizontalInset * 2,
+                height: buttonHeight
+            )
+        }
         model.privacyAlignment = .center
         model.privacyColors = [
             UIColor(red: 0.48, green: 0.53, blue: 0.66, alpha: 1),
@@ -1382,6 +2112,39 @@ private final class OneClickAuthSDKSession {
         model.privacyFont = UIFont.systemFont(ofSize: 12)
         model.privacyOperatorColor = indigo
         model.privacyLineSpaceDp = 3
+        model.privacyFrameBlock = { screenSize, superViewSize, frame in
+            let width = max(superViewSize.width, screenSize.width)
+            return CGRect(
+                x: 40,
+                y: privacyY,
+                width: width - 80,
+                height: max(frame.height, 54)
+            )
+        }
+        model.customViewBlock = { superCustomView in
+            customHostView = superCustomView
+
+            let backgroundView = UIView()
+            backgroundView.backgroundColor = softGray
+            backgroundView.layer.cornerRadius = buttonCornerRadius
+            backgroundView.layer.masksToBounds = true
+            backgroundView.isUserInteractionEnabled = false
+            backgroundView.accessibilityIdentifier = "fuyao.oneclick.change.background"
+            superCustomView.addSubview(backgroundView)
+            changeButtonBackgroundView = backgroundView
+        }
+        model.customViewLayoutBlock = { screenSize, contentFrame, navFrame, titleBarFrame, logoFrame, sloganFrame, numberFrame, loginFrame, changeBtnFrame, privacyFrame in
+            let width = max(contentFrame.width, screenSize.width)
+            let fallbackFrame = CGRect(
+                x: buttonHorizontalInset,
+                y: changeButtonY,
+                width: width - buttonHorizontalInset * 2,
+                height: buttonHeight
+            )
+            let targetFrame = changeBtnFrame.isEmpty ? fallbackFrame : changeBtnFrame
+            changeButtonBackgroundView?.frame = targetFrame
+            changeButtonBackgroundView?.layer.cornerRadius = buttonCornerRadius
+        }
         model.presentDirection = .bottom
         model.animationDuration = 0.25
         model.supportedInterfaceOrientations = .portrait
@@ -1460,12 +2223,12 @@ private final class OneClickAuthSDKSession {
         finish(with: .failure(OneClickAuthError.fallbackRequested))
     }
 
-    private func makeButtonImage(colors: [UIColor]) -> UIImage {
-        let size = CGSize(width: 16, height: 52)
+    private func makeButtonImage(colors: [UIColor], cornerRadius: CGFloat = 18) -> UIImage {
+        let size = CGSize(width: cornerRadius * 2 + 2, height: 52)
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
             let rect = CGRect(origin: .zero, size: size)
-            let path = UIBezierPath(roundedRect: rect, cornerRadius: 26)
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius)
             path.addClip()
 
             if let gradient = CGGradient(
@@ -1484,7 +2247,10 @@ private final class OneClickAuthSDKSession {
                 context.fill(rect)
             }
         }
-        return image.resizableImage(withCapInsets: UIEdgeInsets(top: 26, left: 8, bottom: 26, right: 8))
+        return image.resizableImage(
+            withCapInsets: UIEdgeInsets(top: cornerRadius, left: cornerRadius, bottom: cornerRadius, right: cornerRadius),
+            resizingMode: .stretch
+        )
     }
 
     private func restartTokenTimeout(message: String) {

@@ -60,7 +60,9 @@ struct ProfileView: View {
                             activationMessageCard(activationMessage)
                         }
 
-                        activationCenterCard
+                        if profileStore.isLoggedIn {
+                            activationCenterCard
+                        }
 
                         cacheCard
                         aboutCard
@@ -72,19 +74,30 @@ struct ProfileView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 28)
                 }
+
+                if showLogoutConfirm {
+                    logoutConfirmationOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .zIndex(10)
+                }
+
+                if showActivationSheet {
+                    activationDialogOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .zIndex(9)
+                }
             }
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.large)
             .tint(pageIndigo)
+            .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showLogoutConfirm)
+            .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showActivationSheet)
             .onAppear {
                 calculateCacheSizes()
             }
             .sheet(isPresented: $showAvatarPicker) {
                 AvatarPickerView()
                     .environmentObject(profileStore)
-            }
-            .sheet(isPresented: $showActivationSheet) {
-                activationSheet
             }
             .alert("修改昵称", isPresented: $showNicknameEdit) {
                 TextField("输入新昵称", text: $editingNickname)
@@ -93,12 +106,6 @@ struct ProfileView: View {
                     if !trimmed.isEmpty {
                         profileStore.updateNickname(trimmed)
                     }
-                }
-                Button("取消", role: .cancel) {}
-            }
-            .confirmationDialog("确定要退出登录吗？", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
-                Button("退出登录", role: .destructive) {
-                    profileStore.logout()
                 }
                 Button("取消", role: .cancel) {}
             }
@@ -140,12 +147,8 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 16) {
                 if profileStore.isLoggedIn {
                     loggedInHeader
-                    Divider().overlay(AppTheme.Colors.divider.opacity(0.45))
-                    accessSummary
                 } else {
                     loggedOutHeader
-                    Divider().overlay(AppTheme.Colors.divider.opacity(0.45))
-                    guestAccessSummary
                 }
             }
         }
@@ -186,8 +189,8 @@ struct ProfileView: View {
 
                 if !profileStore.isLoggedIn {
                     HStack(spacing: 10) {
-                        CapsuleInfoTag(title: "未登录仅可用本地书籍", icon: "books.vertical.fill", tint: pageBlue)
-                        CapsuleInfoTag(title: "一键登录后可继续激活", icon: "iphone.gen3.radiowaves.left.and.right", tint: pagePurple)
+                        CapsuleInfoTag(title: "未登录仅可用本地内容", icon: "books.vertical.fill", tint: pageBlue)
+                        CapsuleInfoTag(title: "登录后再输入激活码", icon: "iphone.gen3.radiowaves.left.and.right", tint: pagePurple)
                     }
 
                     Button {
@@ -195,43 +198,26 @@ struct ProfileView: View {
                     } label: {
                         actionEntryRow(
                             icon: "iphone.gen3.radiowaves.left.and.right.circle.fill",
-                            title: "先完成一键登录",
-                            subtitle: "登录后才能输入激活码，解锁发现页和云端书籍"
+                            title: "去登录并解锁云端内容",
+                            subtitle: "支持一键登录和验证码登录，登录后再输入激活码"
                         )
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.985))
                 } else if activationState == .active {
-                    HStack(spacing: 10) {
-                        CapsuleInfoTag(title: activationPlanName, icon: "sparkles", tint: pagePurple)
-                        CapsuleInfoTag(title: "今日剩余 \(dailyQuotaRemaining) 章", icon: "headphones", tint: pageBlue)
-                    }
-
-                    LazyVGrid(columns: summaryColumns, spacing: 12) {
-                        metricTile(title: "每日额度", value: "\(dailyQuotaTotal) 章/天", icon: "waveform", tint: pageBlue)
-                        metricTile(title: "今日剩余", value: "\(dailyQuotaRemaining) 章", icon: "headphones", tint: pagePurple)
-                        metricTile(title: "今日已用", value: "\(dailyQuotaUsed) 章", icon: "chart.bar.fill", tint: pageBlue)
-                        metricTile(title: "有效期至", value: activationExpiryText, icon: "calendar", tint: pagePurple)
-                    }
-
                     Button {
                         presentActivationSheet(source: "reactivate")
                     } label: {
                         actionEntryRow(
                             icon: "arrow.clockwise.circle.fill",
-                            title: "重新输入激活码",
-                            subtitle: "重新提交到激活服务，以后端真实返回为准"
+                            title: "重新提交激活码",
+                            subtitle: "如需更换激活码，可再次提交，以后端真实返回为准"
                         )
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.985))
                 } else {
                     HStack(spacing: 10) {
                         CapsuleInfoTag(title: "已登录未激活", icon: "lock.fill", tint: pageBlue)
-                        CapsuleInfoTag(title: "发现页与云端书籍待解锁", icon: "sparkles", tint: pagePurple)
-                    }
-
-                    HStack(spacing: 12) {
-                        metricTile(title: "当前可用", value: "本地书籍", icon: "books.vertical.fill", tint: pageBlue)
-                        metricTile(title: "云端状态", value: activationState == .expired ? "已过期" : "待激活", icon: "key.fill", tint: pagePurple)
+                        CapsuleInfoTag(title: "当前仅可用本地内容", icon: "books.vertical.fill", tint: pagePurple)
                     }
 
                     Button {
@@ -239,8 +225,8 @@ struct ProfileView: View {
                     } label: {
                         actionEntryRow(
                             icon: "key.fill",
-                            title: activationState == .expired ? "重新激活云端权限" : "输入激活码",
-                            subtitle: "激活后开放发现页和云端书籍，当前仍可正常使用本地书籍"
+                            title: activationState == .expired ? "重新激活云端能力" : "输入激活码解锁云端能力",
+                            subtitle: "激活后开放发现页和云端书籍，当前仍可正常使用本地内容"
                         )
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.985))
@@ -311,6 +297,70 @@ struct ProfileView: View {
         }
     }
 
+    private var logoutConfirmationOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    showLogoutConfirm = false
+                }
+
+            VStack(spacing: 18) {
+                Text("确定要退出登录吗？")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text("退出后仍可使用本地内容，重新登录后会同步账号与激活状态。")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                HStack(spacing: 12) {
+                    Button {
+                        showLogoutConfirm = false
+                    } label: {
+                        Text("取消")
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(Color.white.opacity(0.88))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke(pageIndigo.opacity(0.18), lineWidth: 1)
+                                    )
+                            )
+                    }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.98))
+
+                    Button(role: .destructive) {
+                        showLogoutConfirm = false
+                        profileStore.logout()
+                    } label: {
+                        Text("退出登录")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(Color.red.opacity(0.78))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.98))
+                }
+            }
+            .padding(22)
+            .frame(maxWidth: 330)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color.white.opacity(0.94))
+                    .shadow(color: Color.black.opacity(0.12), radius: 30, x: 0, y: 16)
+            )
+            .padding(.horizontal, 28)
+        }
+    }
+
     // MARK: - Header Views
 
     @ViewBuilder
@@ -363,10 +413,10 @@ struct ProfileView: View {
                 TintedIconBadge(icon: "person.fill", size: 60, iconSize: 22, primary: pageBlue, secondary: pagePurple)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("点击登录")
+                    Text("登录账号")
                         .font(.title3.bold())
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("未登录只能使用本地书籍；登录并激活后可解锁发现页和云端书籍")
+                    Text("未登录只能使用本地内容；完成登录并输入激活码后，才会开放发现页和云端书籍")
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
@@ -404,28 +454,22 @@ struct ProfileView: View {
                 )
                 metricTile(
                     title: "激活状态",
-                    value: hasCloudAccess ? "已激活" : (activationState == .expired ? "已过期" : "待激活"),
+                    value: hasCloudAccess ? "已解锁" : (activationState == .expired ? "已过期" : "待解锁"),
                     icon: hasCloudAccess ? "checkmark.shield.fill" : "lock.fill",
                     tint: pagePurple
                 )
                 metricTile(
-                    title: "每日额度",
-                    value: hasCloudAccess ? "\(dailyQuotaTotal) 章/天" : "激活后开放",
-                    icon: "waveform",
+                    title: "发现页",
+                    value: hasCloudAccess ? "已开放" : "未开放",
+                    icon: "safari.fill",
                     tint: pageBlue
                 )
                 metricTile(
-                    title: "今日剩余",
-                    value: hasCloudAccess ? "\(dailyQuotaRemaining) 章" : "0 章",
-                    icon: "headphones",
+                    title: "当前可用",
+                    value: hasCloudAccess ? "本地 + 云端" : "本地内容",
+                    icon: "books.vertical.fill",
                     tint: pagePurple
                 )
-            }
-
-            if hasCloudAccess {
-                Text(dailyQuotaResetText)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
             }
         }
     }
@@ -442,8 +486,8 @@ struct ProfileView: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
             HStack(spacing: 12) {
-                metricTile(title: "当前可用", value: "本地书籍", icon: "tray.full.fill", tint: pageBlue)
-                metricTile(title: "解锁方式", value: "一键登录 + 激活", icon: "key.fill", tint: pagePurple)
+                metricTile(title: "当前可用", value: "本地内容", icon: "tray.full.fill", tint: pageBlue)
+                metricTile(title: "解锁方式", value: "登录 + 激活", icon: "key.fill", tint: pagePurple)
             }
         }
     }
@@ -470,123 +514,87 @@ struct ProfileView: View {
 
     // MARK: - Activation
 
-    private var activationSheet: some View {
-        NavigationStack {
-            ZStack {
-                profileBackground.ignoresSafeArea()
-
-                ScrollView {
-                    VStack(spacing: 16) {
-                        SurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                HStack {
-                                    TintedIconBadge(icon: "ticket.fill", primary: pageBlue, secondary: pagePurple)
-                                    Spacer()
-                                    CapsuleInfoTag(title: profileStore.isLoggedIn ? "可直接输入激活码" : "需先完成一键登录", icon: "wand.and.stars", tint: pagePurple)
-                                }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("输入激活码")
-                                        .font(.title3.bold())
-                                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                                    Text(profileStore.isLoggedIn ? "提交后会真实调用激活兑换接口，成功与失败都以后端返回为准。" : "请先完成一键登录。登录后才能激活云端权限，开放发现页和云端书籍。")
-                                        .font(.footnote)
-                                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                                }
-                            }
-                        }
-
-                        SurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("激活码")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                                TextField("请输入激活码，例如 [REMOVED_ACTIVATION_CODE]", text: $activationCode)
-                                    .textInputAutocapitalization(.characters)
-                                    .autocorrectionDisabled()
-                                    .onChange(of: activationCode) { newValue in
-                                        let filtered = newValue.uppercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
-                                        activationCode = String(filtered.prefix(24))
-                                    }
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 14)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            .fill(Color.white.opacity(0.64))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                    .stroke(pagePurple.opacity(0.18), lineWidth: 1)
-                                            )
-                                    )
-                                    .disabled(!profileStore.isLoggedIn)
-                                    .opacity(profileStore.isLoggedIn ? 1 : 0.68)
-
-                                HStack(spacing: 8) {
-                                    CapsuleInfoTag(title: "支持大写字母与数字", icon: "keyboard", tint: pageBlue)
-                                    CapsuleInfoTag(title: "提交后真实兑换", icon: "network", tint: pagePurple)
-                                }
-
-                                Text("输入后会调用后端兑换接口，并同步本地登录态、激活态与额度信息。")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                                if profileStore.isLoggedIn {
-                                    LazyVGrid(columns: summaryColumns, spacing: 12) {
-                                        metricTile(title: "登录状态", value: "已登录", icon: "person.fill.checkmark", tint: pageBlue)
-                                        metricTile(title: "激活状态", value: hasCloudAccess ? "已激活" : (activationState == .expired ? "已过期" : "待激活"), icon: hasCloudAccess ? "checkmark.shield.fill" : "lock.fill", tint: pagePurple)
-                                        metricTile(title: "每日额度", value: hasCloudAccess ? "\(dailyQuotaTotal) 章/天" : "激活后开放", icon: "waveform", tint: pageBlue)
-                                        metricTile(title: "今日剩余", value: hasCloudAccess ? "\(dailyQuotaRemaining) 章" : "0 章", icon: "headphones", tint: pagePurple)
-                                    }
-                                }
-                            }
-                        }
-
-                        SurfaceCard {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("提交激活请求")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                                Text("点击按钮后会立即发起真实网络请求，结果以后端返回为准。")
-                                    .font(.footnote)
-                                    .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                                Button {
-                                    Task {
-                                        await submitActivationCode()
-                                    }
-                                } label: {
-                                    Label(
-                                        profileStore.isLoggedIn
-                                            ? (isSubmittingActivation ? "激活中..." : "立即激活")
-                                            : "请先完成一键登录",
-                                        systemImage: profileStore.isLoggedIn ? "checkmark.circle.fill" : "iphone.gen3.radiowaves.left.and.right"
-                                    )
-                                        .font(.headline)
-                                        .foregroundStyle(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 14)
-                                        .background(AppTheme.Colors.brandGradient)
-                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                }
-                                .buttonStyle(LiftPressButtonStyle(scale: 0.985))
-                                .disabled(!profileStore.isLoggedIn || activationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingActivation)
-                                .opacity(!profileStore.isLoggedIn || activationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingActivation ? 0.6 : 1)
-                            }
-                        }
+    private var activationDialogOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    if !isSubmittingActivation {
+                        showActivationSheet = false
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
                 }
-            }
-            .navigationTitle("激活码")
-            .navigationBarTitleDisplayMode(.inline)
-            .tint(pageIndigo)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showActivationSheet = false }
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("激活码")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Spacer()
+
+                    Button {
+                        showActivationSheet = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.78))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(LiftPressButtonStyle(scale: 0.94))
+                    .disabled(isSubmittingActivation)
                 }
+
+                TextField("请输入激活码", text: $activationCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .onChange(of: activationCode) { newValue in
+                        let filtered = newValue.uppercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
+                        activationCode = String(filtered.prefix(24))
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.white.opacity(0.82))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(pagePurple.opacity(0.22), lineWidth: 1)
+                            )
+                    )
+                    .disabled(!profileStore.isLoggedIn || isSubmittingActivation)
+
+                Button {
+                    Task {
+                        await submitActivationCode()
+                    }
+                } label: {
+                    Label(
+                        profileStore.isLoggedIn
+                            ? (isSubmittingActivation ? "激活中..." : "立即激活")
+                            : "请先完成登录",
+                        systemImage: profileStore.isLoggedIn ? "checkmark.circle.fill" : "person.crop.circle.badge.plus"
+                    )
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(AppTheme.Colors.brandGradient)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(LiftPressButtonStyle(scale: 0.985))
+                .disabled(!profileStore.isLoggedIn || activationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingActivation)
+                .opacity(!profileStore.isLoggedIn || activationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmittingActivation ? 0.6 : 1)
             }
+            .padding(22)
+            .frame(maxWidth: 340)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color.white.opacity(0.94))
+                    .shadow(color: Color.black.opacity(0.12), radius: 30, x: 0, y: 16)
+            )
+            .padding(.horizontal, 28)
         }
     }
 
@@ -604,8 +612,8 @@ struct ProfileView: View {
         guard !isSubmittingActivation else { return }
         guard profileStore.isLoggedIn else {
             activationMessage = ActivationMessage(
-                title: "请先完成一键登录",
-                message: "当前账号未登录，仍只能使用本地书籍。完成一键登录后再输入激活码，即可继续完成云端权限解锁。",
+                title: "请先完成登录",
+                message: "当前账号未登录，仍只能使用本地内容。完成登录后再输入激活码，即可继续完成云端能力解锁。",
                 kind: .info
             )
             logActivation(
@@ -780,9 +788,9 @@ struct ProfileView: View {
     }
 
     private var accessStatusTitle: String {
-        if hasCloudAccess { return "云端已激活" }
-        if activationState == .expired { return "云端已过期" }
-        return "已登录待激活"
+        if hasCloudAccess { return "云端能力已解锁" }
+        if activationState == .expired { return "云端能力已过期" }
+        return "已登录待解锁"
     }
 
     private var accessStatusIcon: String {
@@ -797,25 +805,25 @@ struct ProfileView: View {
 
     private var accessStatusDescription: String {
         if hasCloudAccess {
-            return "当前账号已解锁发现页与云端书籍，每日额度、今日剩余和有效期以后端权益返回为准。"
+            return "当前账号已解锁云端能力，发现页与云端书籍现已开放，本地与云端内容都可以正常使用。"
         }
         if activationState == .expired {
-            return "账号仍保持登录，但激活权益已过期。当前仍可继续使用本地书籍，输入新激活码后可重新开放云端内容。"
+            return "账号仍保持登录，但激活权益已过期。当前仍可继续使用本地内容，输入新激活码后可重新开放云端内容。"
         }
-        return "账号已登录，但还未激活。当前只能使用本地书籍，发现页和云端书籍会继续保持锁定。"
+        return "账号已登录，但云端能力还未解锁。当前只能使用本地内容，发现页和云端书籍会继续保持锁定。"
     }
 
     private var activationCenterSubtitle: String {
         if !profileStore.isLoggedIn {
-            return "请先完成一键登录，登录后才能输入激活码"
+            return "请先完成登录，登录后才能输入激活码"
         }
         if activationState == .active {
-            return "已解锁发现页和云端书籍，可继续查看每日额度与有效期"
+            return "已解锁云端能力，可继续使用发现页和云端书籍"
         }
         if activationState == .expired {
             return "激活权益已过期，可重新输入激活码"
         }
-        return "已登录，可输入激活码解锁发现页和云端书籍"
+        return "已登录，可输入激活码解锁云端能力"
     }
 
     private var summaryColumns: [GridItem] {
@@ -893,7 +901,7 @@ struct ProfileView: View {
     private func activationMessageTitle(for status: String) -> String {
         switch ActivationState(rawValue: status) ?? .inactive {
         case .active:
-            return "云端权限已激活"
+            return "云端能力已解锁"
         case .expired:
             return "激活权益已过期"
         case .inactive:
@@ -1086,7 +1094,7 @@ private enum ActivationCodeAPIClient {
         case "expired":
             return "激活服务已返回过期结果，请更换新的激活码。"
         default:
-            return "激活服务已返回结果，但当前云端权限仍未开放。"
+            return "激活服务已返回结果，但当前云端能力仍未开放。"
         }
     }
 

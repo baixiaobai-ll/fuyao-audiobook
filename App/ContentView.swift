@@ -66,10 +66,35 @@ struct ContentView: View {
                 .tag(MainTabRouter.Tab.profile.rawValue)
         }
         .tint(AppTheme.Colors.brandPrimary)
-        .fullScreenCover(isPresented: $tabRouter.isLoginPresented) {
+        .onChange(of: profileStore.isLoggedIn) { isLoggedIn in
+            if isLoggedIn {
+                tabRouter.dismissLogin()
+            }
+        }
+        .background(
+            OneClickLoginLauncher()
+                .environmentObject(profileStore)
+                .environmentObject(tabRouter)
+                .allowsHitTesting(false)
+        )
+        .fullScreenCover(isPresented: smsLoginPresented) {
             LoginView()
                 .environmentObject(profileStore)
+                .environmentObject(tabRouter)
         }
+    }
+
+    private var smsLoginPresented: Binding<Bool> {
+        Binding(
+            get: {
+                tabRouter.isLoginPresented && tabRouter.loginPresentationMode == .sms
+            },
+            set: { isPresented in
+                if !isPresented && tabRouter.loginPresentationMode == .sms {
+                    tabRouter.dismissLogin()
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -119,4 +144,5 @@ struct ContentView: View {
         .environmentObject(BookshelfStore())
         .environmentObject(AudioBookPlayer())
         .environmentObject(MainTabRouter())
+        .environmentObject(UserProfileStore())
 }

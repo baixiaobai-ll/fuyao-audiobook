@@ -10,14 +10,21 @@ final class MainTabRouter: ObservableObject {
         case profile = 3
     }
 
+    enum LoginPresentationMode: Equatable {
+        case oneClick
+        case sms
+    }
+
     @Published var selectedTab: Int = Tab.bookshelf.rawValue
     @Published var isLoginPresented = false
+    @Published var loginPresentationMode: LoginPresentationMode = .oneClick
 
     func openPlayTab() {
         selectedTab = Tab.play.rawValue
     }
 
-    func presentLogin() {
+    func presentLogin(mode: LoginPresentationMode = .oneClick) {
+        loginPresentationMode = mode
         isLoginPresented = true
     }
 
