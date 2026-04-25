@@ -159,7 +159,9 @@ def status_payload(conn, config: AppConfig, user_row=None) -> dict[str, Any]:
             "loggedIn": False,
             "user": None,
             "entitlement": {
+                "accessMode": "activation",
                 "isActivated": False,
+                "dailyQuotaEnabled": config.daily_quota_enabled,
                 "dailyChapterLimit": config.daily_chapter_limit,
                 "usageDay": day_key(config),
                 "usedToday": 0,
@@ -184,9 +186,11 @@ def status_payload(conn, config: AppConfig, user_row=None) -> dict[str, Any]:
             "lastLoginAt": user_row["last_login_at"],
         },
         "entitlement": {
+            "accessMode": "activation",
             "isActivated": activated,
             "activatedAt": entitlement["activated_at"],
             "activationCodeId": entitlement["activation_code_id"],
+            "dailyQuotaEnabled": config.daily_quota_enabled,
             "dailyChapterLimit": limit,
             "usageDay": usage_day,
             "usedToday": used if activated else 0,
@@ -222,6 +226,16 @@ class FuyaoBackendApp:
         self.db = db
         self.sms_provider = sms_provider
         self.one_click_provider = one_click_provider
+
+    def _effective_sms_code_ttl_seconds(self) -> int:
+        if self.sms_provider.name == "aliyun":
+            return self.config.aliyun_sms_validity_seconds
+        return self.config.sms_code_ttl_seconds
+
+    def _effective_sms_retry_after_seconds(self) -> int:
+        if self.sms_provider.name == "aliyun":
+            return max(self.config.sms_resend_seconds, self.config.aliyun_sms_interval_seconds)
+        return self.config.sms_resend_seconds
 
     def authenticate(self, handler: BaseHTTPRequestHandler, required: bool = True):
         token = extract_bearer_token(handler, required=required)
@@ -381,6 +395,8 @@ class FuyaoBackendApp:
     def handle_send_code(self, handler: BaseHTTPRequestHandler) -> None:
         payload = read_json(handler)
         phone = validate_phone(str(payload.get("phone", "")))
+        retry_after_seconds = self._effective_sms_retry_after_seconds()
+        expires_in_seconds = self._effective_sms_code_ttl_seconds()
 
         with self.db.transaction() as conn:
             latest = conn.execute(
@@ -396,7 +412,7 @@ class FuyaoBackendApp:
             if latest:
                 last_sent_at = parse_iso(latest["created_at"])
                 if last_sent_at is not None:
-                    wait_seconds = self.config.sms_resend_seconds - int((utc_now() - last_sent_at).total_seconds())
+                    wait_seconds = retry_after_seconds - int((utc_now() - last_sent_at).total_seconds())
                     if wait_seconds > 0:
                         raise ApiError(
                             429,
@@ -411,7 +427,7 @@ class FuyaoBackendApp:
                 )
             created_at = iso_now()
             expires_at = (
-                utc_now() + timedelta(seconds=self.config.sms_code_ttl_seconds)
+                utc_now() + timedelta(seconds=expires_in_seconds)
             ).replace(microsecond=0).isoformat()
             sms_request_id = request_id()
 
@@ -420,7 +436,7 @@ class FuyaoBackendApp:
                     phone=phone,
                     code=generated_code,
                     request_id=sms_request_id,
-                    ttl_seconds=self.config.sms_code_ttl_seconds,
+                    ttl_seconds=expires_in_seconds,
                 )
             except SmsSendError as exc:
                 raise ApiError(
@@ -454,8 +470,8 @@ class FuyaoBackendApp:
             "phone": phone,
             "provider": self.sms_provider.name,
             "requestId": sms_request_id,
-            "expiresIn": self.config.sms_code_ttl_seconds,
-            "retryAfter": self.config.sms_resend_seconds,
+            "expiresIn": expires_in_seconds,
+            "retryAfter": retry_after_seconds,
         }
         if self.sms_provider.name == "mock" and result.issued_code:
             response["debugCode"] = result.issued_code
@@ -468,8 +484,6 @@ class FuyaoBackendApp:
         if not re.fullmatch(r"\d{4,8}", code):
             raise ApiError(400, "invalid_code", "Verification code must be 4 to 8 digits.")
 
-        raw_token = session_token()
-        expires_at = (utc_now() + timedelta(days=self.config.session_ttl_days)).replace(microsecond=0).isoformat()
         now = iso_now()
 
         with self.db.transaction() as conn:
@@ -627,7 +641,7 @@ class FuyaoBackendApp:
             user_id = session["user"]["id"]
             entitlement = ensure_entitlement(conn, user_id, self.config)
             if not bool(entitlement["is_activated"]):
-                raise ApiError(403, "not_activated", "Activation is required before consuming cloud chapter quota.")
+                raise ApiError(403, "not_activated", "Activation is required before using cloud capabilities.")
 
             existing = conn.execute(
                 """
@@ -642,6 +656,7 @@ class FuyaoBackendApp:
                 response = {
                     "requestId": consume_request_id,
                     "status": "already_consumed" if existing["status"] == "consumed" else "already_rolled_back",
+                    "quotaApplied": self.config.daily_quota_enabled,
                     "usageDay": usage_day,
                     "usedToday": current_used,
                     "remainingToday": max(int(entitlement["daily_chapter_limit"]) - current_used, 0),
@@ -651,7 +666,7 @@ class FuyaoBackendApp:
 
             current_used = used_today(conn, user_id, usage_day)
             limit = int(entitlement["daily_chapter_limit"])
-            if current_used >= limit:
+            if self.config.daily_quota_enabled and current_used >= limit:
                 raise ApiError(403, "quota_exceeded", "Daily chapter quota has been exhausted.")
 
             conn.execute(
@@ -666,6 +681,7 @@ class FuyaoBackendApp:
             response = {
                 "requestId": consume_request_id,
                 "status": "consumed",
+                "quotaApplied": self.config.daily_quota_enabled,
                 "usageDay": usage_day,
                 "usedToday": updated_used,
                 "remainingToday": max(limit - updated_used, 0),
@@ -700,6 +716,7 @@ class FuyaoBackendApp:
                 response = {
                     "requestId": rollback_request_id,
                     "status": "already_rolled_back",
+                    "quotaApplied": self.config.daily_quota_enabled,
                     "usageDay": usage_day,
                     "usedToday": current_used,
                     "remainingToday": max(limit - current_used, 0),
@@ -720,6 +737,7 @@ class FuyaoBackendApp:
             response = {
                 "requestId": rollback_request_id,
                 "status": "rolled_back",
+                "quotaApplied": self.config.daily_quota_enabled,
                 "usageDay": usage_day,
                 "usedToday": current_used,
                 "remainingToday": max(limit - current_used, 0),
