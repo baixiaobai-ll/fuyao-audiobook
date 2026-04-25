@@ -302,41 +302,56 @@ class LocalRuleAnalysisService: AIAnalysisService {
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // 检测对话（引号包裹）
-            let leftQuote = "\u{201C}"
-            let rightQuote = "\u{201D}"
-            if trimmed.contains("\"") || trimmed.contains("'") || trimmed.contains(leftQuote) || trimmed.contains(rightQuote) {
-                let speaker = extractSpeaker(from: trimmed)
-                let dialogueText = extractDialogue(from: trimmed)
-
-                segments.append(SimpleSegment(
-                    text: dialogueText,
-                    type: "dialogue",
-                    speaker: speaker,
-                    emotion: detectEmotion(from: dialogueText),
-                    sceneType: "peaceful",
-                    sceneIntensity: 0.5
-                ))
-            } else {
-                segments.append(SimpleSegment(
-                    text: trimmed,
-                    type: "narration",
-                    speaker: nil,
-                    emotion: "neutral",
-                    sceneType: detectScene(from: trimmed),
-                    sceneIntensity: 0.5
-                ))
-            }
+            guard !trimmed.isEmpty else { continue }
+            segments.append(contentsOf: analyzeLineWithRules(trimmed))
         }
 
         return segments
     }
 
+    private func analyzeLineWithRules(_ text: String) -> [SimpleSegment] {
+        let quotedRanges = extractQuotedRanges(from: text)
+        guard !quotedRanges.isEmpty else {
+            return [makeNarrationSegment(from: text)]
+        }
+
+        var segments: [SimpleSegment] = []
+        let speaker = extractSpeaker(from: text)
+        var cursor = text.startIndex
+
+        for quoted in quotedRanges {
+            let prefix = String(text[cursor..<quoted.fullRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !prefix.isEmpty {
+                segments.append(makeNarrationSegment(from: prefix))
+            }
+
+            let dialogueText = String(text[quoted.contentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !dialogueText.isEmpty {
+                segments.append(SimpleSegment(
+                    text: dialogueText,
+                    type: "dialogue",
+                    speaker: speaker,
+                    emotion: detectEmotion(from: dialogueText),
+                    sceneType: detectScene(from: dialogueText),
+                    sceneIntensity: 0.5
+                ))
+            }
+
+            cursor = quoted.fullRange.upperBound
+        }
+
+        let suffix = String(text[cursor...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !suffix.isEmpty {
+            segments.append(makeNarrationSegment(from: suffix))
+        }
+
+        return segments.isEmpty ? [makeNarrationSegment(from: text)] : segments
+    }
+
     private func extractSpeaker(from text: String) -> String? {
         let patterns = [
-            "([^：:]+)[说道喊叫问答][:：]",
-            "([^：:]+)[:：]"
+            "^\\s*([^：:，,。！？“\"'「『]{1,12}?)(?:轻声|低声|沉声|笑着|淡淡地|冷冷地|认真地|无奈地|开口|回应|提醒|解释|说道|说|问道|问|答道|答|喊道|喊|叫道|叫|回道|应道|道)[：:，, ]*",
+            "^\\s*([^：:]{1,12})[：:]"
         ]
 
         for pattern in patterns {
@@ -350,18 +365,42 @@ class LocalRuleAnalysisService: AIAnalysisService {
         return nil
     }
 
-    private func extractDialogue(from text: String) -> String {
-        let patterns = ["[\"\\u201C\\u201D]([^\"\\u201C\\u201D]+)[\"\\u201C\\u201D]", "\"([^\"]+)\"", "'([^']+)'"]
+    private func extractQuotedRanges(from text: String) -> [QuotedRange] {
+        let patterns = [
+            "“([^”]+)”",
+            "\"([^\"]+)\"",
+            "「([^」]+)」",
+            "『([^』]+)』",
+            "‘([^’]+)’",
+            "'([^']+)'"
+        ]
+        var ranges: [QuotedRange] = []
 
         for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-               let range = Range(match.range(at: 1), in: text) {
-                return String(text[range])
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let fullRange = Range(match.range(at: 0), in: text),
+                      let contentRange = Range(match.range(at: 1), in: text) else {
+                    continue
+                }
+                ranges.append(QuotedRange(fullRange: fullRange, contentRange: contentRange))
             }
         }
 
-        return text
+        return ranges.sorted { lhs, rhs in
+            lhs.fullRange.lowerBound < rhs.fullRange.lowerBound
+        }
+    }
+
+    private func makeNarrationSegment(from text: String) -> SimpleSegment {
+        SimpleSegment(
+            text: text,
+            type: "narration",
+            speaker: nil,
+            emotion: "neutral",
+            sceneType: detectScene(from: text),
+            sceneIntensity: 0.5
+        )
     }
 
     private func detectEmotion(from text: String) -> String {
@@ -440,5 +479,10 @@ class LocalRuleAnalysisService: AIAnalysisService {
     private struct SimpleCharacter {
         let name: String
         let gender: String
+    }
+
+    private struct QuotedRange {
+        let fullRange: Range<String.Index>
+        let contentRange: Range<String.Index>
     }
 }
