@@ -2795,6 +2795,86 @@ private func sdkPresenterIsPreferred(_ controller: UIViewController) -> Bool {
 }
 
 #elseif canImport(UIKit)
+private func sdkAwaitBasePresenterAfterDismiss(
+    timeout: TimeInterval = 2.0,
+    pollInterval: UInt64 = 80_000_000
+) async throws -> UIViewController {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    while Date() < deadline {
+        let rootController = await MainActor.run {
+            UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap(\.windows)
+                .first(where: \.isKeyWindow)?
+                .rootViewController
+        }
+
+        if let rootController,
+           rootController.presentedViewController == nil,
+           rootController.view.window != nil {
+            return await MainActor.run {
+                rootController.topMostPresentedController
+            }
+        }
+
+        try? await Task.sleep(nanoseconds: pollInterval)
+    }
+
+    print("[OneClickLogin] stage=展示容器 code=CLIENT_BASE_PRESENTER_TIMEOUT message=关闭当前登录页后，底层宿主 controller 仍未回到可展示状态。")
+    throw OneClickAuthError.sdkCallback(
+        stage: "展示容器",
+        code: "CLIENT_BASE_PRESENTER_TIMEOUT",
+        message: "关闭当前登录页后，底层宿主 controller 仍未回到可展示状态，暂时无法按最小链路拉起号码认证授权页。"
+    )
+}
+
+private func sdkDismissalPresenterCandidates(from controller: UIViewController?) -> [UIViewController] {
+    guard let controller else { return [] }
+
+    let rawCandidates = [
+        controller.parent?.presentingViewController?.topMostPresentedController,
+        controller.presentingViewController?.topMostPresentedController,
+        controller.parent?.presentingViewController,
+        controller.presentingViewController,
+        controller.parent,
+        controller.view.window?.rootViewController,
+        controller
+    ].compactMap { $0 }
+
+    var unique: [UIViewController] = []
+    for candidate in rawCandidates where !unique.contains(where: { $0 === candidate }) {
+        unique.append(candidate)
+    }
+    return unique
+}
+
+private func sdkPresenterCandidates(from controller: UIViewController) -> [UIViewController] {
+    let rawCandidates = [
+        controller.view.window?.rootViewController?.topMostPresentedControllerIfAvailable,
+        controller.parent?.presentedViewController?.topMostPresentedControllerIfAvailable,
+        controller.presentingViewController?.presentedViewController?.topMostPresentedControllerIfAvailable,
+        controller.parent?.topMostPresentedControllerIfAvailable,
+        controller.presentingViewController?.topMostPresentedControllerIfAvailable,
+        controller.topMostPresentedControllerIfAvailable,
+        controller.parent,
+        controller.presentingViewController,
+        controller.view.window?.rootViewController,
+        controller
+    ].compactMap { $0 }
+
+    var unique: [UIViewController] = []
+    for candidate in rawCandidates where !unique.contains(where: { $0 === candidate }) {
+        unique.append(candidate)
+    }
+    return unique
+}
+
+private func sdkPresenterIsPreferred(_ controller: UIViewController) -> Bool {
+    let typeName = String(describing: type(of: controller))
+    return !typeName.contains("LoginPresenterResolverController")
+}
+
 @MainActor
 private enum OneClickAuthSDKBridge {
     static func startLogin(

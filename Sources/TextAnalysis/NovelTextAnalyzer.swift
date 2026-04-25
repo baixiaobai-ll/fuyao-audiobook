@@ -18,6 +18,27 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
     private let aiService: AIAnalysisService
     private let cache: AnalysisCache
+    private static let speechVerbMarkers = [
+        "笑着说", "轻声说", "低声说", "沉声说", "冷冷说道", "轻声说道", "低声说道",
+        "沉声说道", "提醒道", "解释道", "吩咐道", "喃喃道", "嘀咕道", "回头说道",
+        "开口说道", "回应道", "回道", "应道", "说道", "说", "问道", "问", "答道",
+        "答", "喊道", "喊", "叫道", "叫", "道"
+    ]
+    private static let speakerStyleSuffixes = [
+        "笑着", "轻声", "低声", "沉声", "冷冷地", "冷冷", "淡淡地", "淡淡",
+        "认真地", "认真", "无奈地", "无奈", "平静地", "平静", "咬牙切齿地", "咬牙切齿"
+    ]
+    private static let removableHonorificPrefixes = ["老", "小", "阿"]
+    private static let removableHonorificSuffixes = [
+        "先生", "小姐", "姑娘", "夫人", "老师", "医生", "警官", "将军", "老板", "掌柜",
+        "殿下", "大人", "公子", "少爷", "哥哥", "姐姐", "弟弟", "妹妹", "叔叔", "阿姨"
+    ]
+    private static let uncertainSpeakerNames: Set<String> = [
+        "他", "她", "它", "他们", "她们", "对方", "对面", "众人", "所有人", "两人",
+        "二人", "三人", "一人", "男人", "女人", "少年", "少女", "青年", "老人",
+        "老者", "老妇", "孩子", "小孩", "男孩", "女孩", "壮汉", "黑衣人", "路人",
+        "店员", "店小二", "仆人", "侍女", "下人", "士兵", "官兵"
+    ]
 
     init(aiService: AIAnalysisService, cache: AnalysisCache = AnalysisCache()) {
         self.aiService = aiService
@@ -188,6 +209,9 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         **输出约束**：
         - 必须只输出 JSON，不要输出解释、前后缀、markdown
         - `type` 只能是 `dialogue|narration|description|thought`
+        - 只有当说话人能稳定确定时才填写 `speaker`，不确定时必须返回 `null` 或空字符串，不要猜测
+        - 不要把“他/她/对方/众人/男人/女人/少年/少女”等泛指称呼当成稳定角色名
+        - 同一角色请保持命名一致，不要一会儿用全名、一会儿用泛称或临时称呼
         - `emotion` 只能是 `neutral|happy|sad|angry|excited|fearful|surprised|tender`
         - `sceneType` 只能是 `peaceful|tense|battle|romantic|mysterious|sad|festive`
         - `gender` 只能是 `male|female|neutral|child|elder`
@@ -234,6 +258,21 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         var segments: [TextSegment] = []
         var characters: Set<Character> = []
         var scenes: [NovelScene] = []
+        var knownCharacterGenders: [String: Character.Gender] = [:]
+
+        for charData in aiResult.characters {
+            guard let stableName = stableSpeakerName(from: charData.name) else { continue }
+            let normalizedGender = normalizeGender(charData.gender)
+            let key = canonicalCharacterKey(for: stableName)
+            if !key.isEmpty, knownCharacterGenders[key] == nil {
+                knownCharacterGenders[key] = normalizedGender
+            }
+            _ = upsertCharacter(
+                named: stableName,
+                gender: normalizedGender,
+                characters: &characters
+            )
+        }
 
         for (index, segmentData) in aiResult.segments.enumerated() {
             let normalizedType = normalizeSegmentType(segmentData.type, text: segmentData.text)
@@ -256,16 +295,15 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
             // 查找或创建角色
             var speaker: Character?
-            if let speakerName = segmentData.speaker, !speakerName.isEmpty {
-                let cleanedSpeakerName = cleanSpeakerName(speakerName)
-                if !cleanedSpeakerName.isEmpty {
-                    let gender = aiResult.characters.first(where: { cleanSpeakerName($0.name) == cleanedSpeakerName })?.gender ?? "neutral"
-                    speaker = upsertCharacter(
-                        named: cleanedSpeakerName,
-                        gender: normalizeGender(gender),
-                        characters: &characters
-                    )
-                }
+            if normalizedType == .dialogue,
+               let speakerName = segmentData.speaker,
+               let resolvedSpeakerName = stableSpeakerName(from: speakerName) {
+                let gender = knownCharacterGenders[canonicalCharacterKey(for: resolvedSpeakerName)] ?? .neutral
+                speaker = upsertCharacter(
+                    named: resolvedSpeakerName,
+                    gender: gender,
+                    characters: &characters
+                )
             }
 
             // 创建片段
@@ -278,18 +316,6 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
                 order: index
             )
             segments.append(segment)
-        }
-
-        // 添加所有角色
-        for charData in aiResult.characters {
-            let normalizedName = cleanSpeakerName(charData.name)
-            if !normalizedName.isEmpty {
-                _ = upsertCharacter(
-                    named: normalizedName,
-                    gender: normalizeGender(charData.gender),
-                    characters: &characters
-                )
-            }
         }
 
         return ChunkAnalysisResult(
@@ -571,13 +597,114 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     }
 
     private func cleanSpeakerName(_ raw: String) -> String {
-        raw
+        var candidate = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "：", with: "")
-            .replacingOccurrences(of: ":", with: "")
             .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "'", with: "")
             .replacingOccurrences(of: "“", with: "")
             .replacingOccurrences(of: "”", with: "")
+            .replacingOccurrences(of: "‘", with: "")
+            .replacingOccurrences(of: "’", with: "")
+            .replacingOccurrences(of: "「", with: "")
+            .replacingOccurrences(of: "」", with: "")
+            .replacingOccurrences(of: "『", with: "")
+            .replacingOccurrences(of: "』", with: "")
+            .replacingOccurrences(of: "（", with: "")
+            .replacingOccurrences(of: "）", with: "")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+
+        candidate = candidate.replacingOccurrences(
+            of: "^[：:、，,。！？!？；;\\s]+|[：:、，,。！？!？；;\\s]+$",
+            with: "",
+            options: .regularExpression
+        )
+
+        if let splitIndex = Self.speechVerbMarkers
+            .compactMap({ marker in
+                candidate.range(of: marker).flatMap { range in
+                    range.lowerBound == candidate.startIndex ? nil : range.lowerBound
+                }
+            })
+            .min() {
+            candidate = String(candidate[..<splitIndex])
+        }
+
+        var trimmed = true
+        while trimmed {
+            trimmed = false
+            for suffix in Self.speakerStyleSuffixes {
+                if candidate.hasSuffix(suffix), candidate.count > suffix.count {
+                    candidate.removeLast(suffix.count)
+                    trimmed = true
+                    break
+                }
+            }
+        }
+
+        return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func stableSpeakerName(from raw: String) -> String? {
+        let cleaned = cleanSpeakerName(raw)
+        guard !cleaned.isEmpty, !isUncertainSpeakerName(cleaned) else {
+            return nil
+        }
+        return cleaned
+    }
+
+    private func canonicalCharacterKey(for name: String) -> String {
+        let cleaned = cleanSpeakerName(name)
+        guard !cleaned.isEmpty else { return "" }
+
+        var candidate = cleaned
+        for prefix in Self.removableHonorificPrefixes where candidate.hasPrefix(prefix) && candidate.count > prefix.count {
+            candidate.removeFirst(prefix.count)
+            break
+        }
+
+        let sortedSuffixes = Self.removableHonorificSuffixes.sorted { $0.count > $1.count }
+        for suffix in sortedSuffixes where candidate.hasSuffix(suffix) && candidate.count > suffix.count {
+            candidate.removeLast(suffix.count)
+            break
+        }
+
+        let normalized = candidate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+            .lowercased()
+        return normalized.isEmpty ? cleaned.lowercased() : normalized
+    }
+
+    private func isUncertainSpeakerName(_ raw: String) -> Bool {
+        let candidate = cleanSpeakerName(raw)
+        guard !candidate.isEmpty else { return true }
+
+        let canonical = canonicalCharacterKey(for: candidate)
+        let lowercased = candidate.lowercased()
+        if Self.uncertainSpeakerNames.contains(lowercased) || Self.uncertainSpeakerNames.contains(canonical) {
+            return true
+        }
+
+        if candidate.count > 8 || canonical.count > 8 {
+            return true
+        }
+
+        if candidate.contains(" ") {
+            return true
+        }
+
+        if candidate.range(of: "[，。！？；：、“”\"'（）()【】\\[\\]/\\\\]", options: .regularExpression) != nil {
+            return true
+        }
+
+        let ambiguousPrefixes = ["一个", "那位", "这位", "那名", "这名", "某位", "某个", "某名"]
+        if ambiguousPrefixes.contains(where: { candidate.hasPrefix($0) }) {
+            return true
+        }
+
+        let ambiguousFragments = ["众人", "两人", "二人", "三人", "几人", "人群", "声音", "话音", "身影", "脚步"]
+        return ambiguousFragments.contains(where: { candidate.contains($0) })
     }
 
     private func upsertCharacter(
@@ -585,10 +712,15 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         gender: Character.Gender,
         characters: inout Set<Character>
     ) -> Character {
-        if let existing = characters.first(where: { $0.name == name }) {
+        let cleanedName = cleanSpeakerName(name)
+        let canonical = canonicalCharacterKey(for: cleanedName)
+        if let existing = characters.first(where: {
+            cleanSpeakerName($0.name) == cleanedName
+                || (!canonical.isEmpty && canonicalCharacterKey(for: $0.name) == canonical)
+        }) {
             return existing
         }
-        let character = Character(name: name, gender: gender)
+        let character = Character(name: cleanedName, gender: gender)
         characters.insert(character)
         return character
     }

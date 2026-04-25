@@ -42,6 +42,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private var chapterAdvanceHandler: (() async throws -> Void)?
     private var hasTriggeredChapterPrefetch = false
     private var isAdvancingToNextChapter = false
+    private var remoteCommandCenterConfigured = false
 
     // MARK: - Initialization
 
@@ -52,6 +53,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         setupAudioSession()
         setupNotifications()
+        setupRemoteCommandCenter()
         restorePersistedPlaybackState()
     }
 
@@ -99,6 +101,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         print("📚 已加载播放列表: \(playlist.title), 共 \(playlist.items.count) 项")
         ChapterPrefetchCoordinator.shared.resetForNewPlayback()
         persistPlaybackState()
+        publishNowPlayingInfoCenter()
         syncLiveActivity()
     }
 
@@ -126,6 +129,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
 
         persistPlaybackState()
+        updateRemoteCommandAvailability()
         syncLiveActivity()
     }
 
@@ -191,6 +195,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             let playerItem = AVPlayerItem(url: audioURL)
 
             player = AVPlayer(playerItem: playerItem)
+            player?.automaticallyWaitsToMinimizeStalling = true
             player?.volume = config.volume
             player?.rate = config.playbackRate
 
@@ -373,7 +378,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            let options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+            let options = makeAudioSessionOptions()
             try audioSession.setCategory(.playback, mode: .spokenAudio, options: options)
             try audioSession.setActive(true, options: [])
             #if canImport(UIKit)
@@ -408,6 +413,13 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleAppDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
@@ -433,12 +445,126 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            let options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+            let options = makeAudioSessionOptions()
             try audioSession.setCategory(.playback, mode: .spokenAudio, options: options)
             try audioSession.setActive(true, options: [])
         } catch {
             print("⚠️ 激活音频会话失败: \(error.localizedDescription)")
         }
+        #endif
+    }
+
+    #if os(iOS) || os(tvOS) || os(watchOS)
+    private func makeAudioSessionOptions() -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+        #if os(iOS) || os(tvOS)
+        options.insert(.allowBluetoothA2DP)
+        #endif
+        return options
+    }
+    #endif
+
+    private func setupRemoteCommandCenter() {
+        #if os(iOS) || os(tvOS)
+        guard !remoteCommandCenterConfigured else { return }
+        remoteCommandCenterConfigured = true
+
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.removeTarget(nil)
+        commandCenter.pauseCommand.removeTarget(nil)
+        commandCenter.togglePlayPauseCommand.removeTarget(nil)
+        commandCenter.nextTrackCommand.removeTarget(nil)
+        commandCenter.previousTrackCommand.removeTarget(nil)
+        commandCenter.changePlaybackPositionCommand.removeTarget(nil)
+
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard self.currentPlaylist?.currentItem != nil else { return .noActionableNowPlayingItem }
+            if self.state != .playing {
+                self.play()
+            }
+            return .success
+        }
+
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard self.currentPlaylist?.currentItem != nil else { return .noActionableNowPlayingItem }
+            if self.state == .playing {
+                self.pause()
+            }
+            return .success
+        }
+
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard self.currentPlaylist?.currentItem != nil else { return .noActionableNowPlayingItem }
+            if self.state == .playing {
+                self.pause()
+            } else {
+                self.play()
+            }
+            return .success
+        }
+
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            return self.handleRemoteNextCommand()
+        }
+
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard let playlist = self.currentPlaylist else { return .noActionableNowPlayingItem }
+            guard playlist.hasPrevious else { return .commandFailed }
+            self.previous()
+            return .success
+        }
+
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self else { return .commandFailed }
+            guard let _ = self.currentPlaylist,
+                  let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .noActionableNowPlayingItem
+            }
+            self.seekToAggregatedTime(positionEvent.positionTime)
+            self.publishNowPlayingInfoCenter()
+            return .success
+        }
+
+        updateRemoteCommandAvailability()
+        #endif
+    }
+
+    private func handleRemoteNextCommand() -> MPRemoteCommandHandlerStatus {
+        guard let playlist = currentPlaylist else {
+            return .noActionableNowPlayingItem
+        }
+
+        if playlist.hasNext {
+            next()
+            return .success
+        }
+
+        if playlist.chapterContext != nil, chapterAdvanceHandler != nil {
+            advanceToNextChapterIfPossible()
+            return .success
+        }
+
+        return .commandFailed
+    }
+
+    private func updateRemoteCommandAvailability() {
+        #if os(iOS) || os(tvOS)
+        let commandCenter = MPRemoteCommandCenter.shared()
+        let hasPlayableItem = currentPlaylist?.currentItem != nil
+        let canSkipForward = (currentPlaylist?.hasNext ?? false)
+            || (currentPlaylist?.chapterContext != nil && chapterAdvanceHandler != nil)
+
+        commandCenter.playCommand.isEnabled = hasPlayableItem && state != .playing
+        commandCenter.pauseCommand.isEnabled = hasPlayableItem && state == .playing
+        commandCenter.togglePlayPauseCommand.isEnabled = hasPlayableItem
+        commandCenter.nextTrackCommand.isEnabled = hasPlayableItem && canSkipForward
+        commandCenter.previousTrackCommand.isEnabled = currentPlaylist?.hasPrevious ?? false
+        commandCenter.changePlaybackPositionCommand.isEnabled = hasPlayableItem && progress.duration > 0
         #endif
     }
 
@@ -516,6 +642,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             totalItems: totalItems
         )
         notifyPrefetchAndNowPlaying()
+        updateRemoteCommandAvailability()
         syncLiveActivity()
     }
 
@@ -616,6 +743,22 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         #endif
     }
 
+    @objc private func handleMediaServicesReset() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
+        let work = { [weak self] in
+            guard let self else { return }
+            self.setupAudioSession()
+            if self.state == .playing {
+                self.ensureAudioSessionActive()
+                self.player?.play()
+                self.player?.rate = self.config.playbackRate
+            }
+            self.publishNowPlayingInfoCenter()
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+        #endif
+    }
+
     @objc private func handleAppDidEnterBackground() {
         #if os(iOS) || os(tvOS) || os(watchOS)
         if state == .playing {
@@ -696,6 +839,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 publishNowPlayingInfoCenter()
             }
         }
+        updateRemoteCommandAvailability()
     }
 
     private func publishNowPlayingInfoCenter() {
@@ -712,11 +856,15 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = progress.currentTime
         info[MPMediaItemPropertyPlaybackDuration] = max(progress.duration, 0)
         info[MPNowPlayingInfoPropertyPlaybackRate] = (state == .playing) ? Double(config.playbackRate) : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackQueueCount] = progress.totalItems
+        info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = progress.currentItemIndex
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        updateRemoteCommandAvailability()
     }
 
     private func clearNowPlayingInfoCenter() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        updateRemoteCommandAvailability()
     }
 
     private func syncLiveActivity() {
@@ -785,6 +933,16 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         #endif
         #if canImport(UIKit)
         UIApplication.shared.endReceivingRemoteControlEvents()
+        #endif
+        #if os(iOS) || os(tvOS)
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.removeTarget(nil)
+        commandCenter.pauseCommand.removeTarget(nil)
+        commandCenter.togglePlayPauseCommand.removeTarget(nil)
+        commandCenter.nextTrackCommand.removeTarget(nil)
+        commandCenter.previousTrackCommand.removeTarget(nil)
+        commandCenter.changePlaybackPositionCommand.removeTarget(nil)
+        remoteCommandCenterConfigured = false
         #endif
         NotificationCenter.default.removeObserver(self)
     }
@@ -1008,6 +1166,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             }
 
             print("📚 已恢复上次播放快照: \(restoredPlaylist.title)")
+            publishNowPlayingInfoCenter()
+            updateRemoteCommandAvailability()
         } catch {
             try? FileManager.default.removeItem(at: url)
             print("⚠️ 恢复播放快照失败，已清理损坏快照: \(error.localizedDescription)")

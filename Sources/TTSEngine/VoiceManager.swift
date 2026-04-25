@@ -10,6 +10,11 @@ import Foundation
 /// 音色管理器
 class VoiceManager {
     static let narrationBindingKey = "__narration__"
+    private static let removableHonorificPrefixes = ["老", "小", "阿"]
+    private static let removableHonorificSuffixes = [
+        "先生", "小姐", "姑娘", "夫人", "老师", "医生", "警官", "将军", "老板", "掌柜",
+        "殿下", "大人", "公子", "少爷", "哥哥", "姐姐", "弟弟", "妹妹", "叔叔", "阿姨"
+    ]
 
     private var characterVoiceMap: [UUID: Voice] = [:]
     private var availableVoices: [Voice] = []
@@ -167,7 +172,7 @@ class VoiceManager {
 
         for character in characters {
             // 1. 已有绑定 → 恢复
-            if let voiceId = existingBindings[character.name],
+            if let voiceId = resolveExistingVoiceId(for: character.name, existingBindings: existingBindings),
                let voice = availableVoices.first(where: { $0.id == voiceId }) {
                 assignments[character] = voice
                 characterVoiceMap[character.id] = voice
@@ -218,5 +223,48 @@ class VoiceManager {
         }
 
         print("📥 已导入 \(characterVoiceMap.count) 个音色配置")
+    }
+
+    private func resolveExistingVoiceId(
+        for characterName: String,
+        existingBindings: [String: String]
+    ) -> String? {
+        if let exact = existingBindings[characterName] {
+            return exact
+        }
+
+        let canonical = Self.canonicalBindingKey(for: characterName)
+        guard !canonical.isEmpty else { return nil }
+
+        return existingBindings.first(where: { key, _ in
+            key != Self.narrationBindingKey && Self.canonicalBindingKey(for: key) == canonical
+        })?.value
+    }
+
+    private static func canonicalBindingKey(for raw: String) -> String {
+        var candidate = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "“", with: "")
+            .replacingOccurrences(of: "”", with: "")
+            .replacingOccurrences(of: "：", with: "")
+            .replacingOccurrences(of: ":", with: "")
+
+        for prefix in removableHonorificPrefixes where candidate.hasPrefix(prefix) && candidate.count > prefix.count {
+            candidate.removeFirst(prefix.count)
+            break
+        }
+
+        let sortedSuffixes = removableHonorificSuffixes.sorted { $0.count > $1.count }
+        for suffix in sortedSuffixes where candidate.hasSuffix(suffix) && candidate.count > suffix.count {
+            candidate.removeLast(suffix.count)
+            break
+        }
+
+        return candidate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+            .lowercased()
     }
 }
