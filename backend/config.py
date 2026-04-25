@@ -60,6 +60,7 @@ class AppConfig:
     session_ttl_days: int
     sms_code_ttl_seconds: int
     sms_resend_seconds: int
+    daily_quota_enabled: bool
     daily_chapter_limit: int
     one_click_provider: str
     one_click_mock_phone: str
@@ -105,6 +106,7 @@ def load_config() -> AppConfig:
         session_ttl_days=_env_int("FUYAO_SESSION_TTL_DAYS", 30),
         sms_code_ttl_seconds=sms_code_ttl_seconds,
         sms_resend_seconds=sms_resend_seconds,
+        daily_quota_enabled=_env_bool("FUYAO_DAILY_QUOTA_ENABLED", False),
         daily_chapter_limit=_env_int("FUYAO_DAILY_CHAPTER_LIMIT", 10),
         one_click_provider=os.getenv("FUYAO_ONE_CLICK_PROVIDER", "mock").strip().lower(),
         one_click_mock_phone=os.getenv("FUYAO_ONE_CLICK_MOCK_PHONE", "13800138000"),

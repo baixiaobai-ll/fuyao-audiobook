@@ -45,7 +45,12 @@ mkdir -p /opt/fuyao-backend/shared
 cp /opt/fuyao-backend/current/backend/.env.example /opt/fuyao-backend/current/backend/.env
 ```
 
-Then fill in the one-click login fields and point `FUYAO_BACKEND_DB` at `/opt/fuyao-backend/shared/fuyao.sqlite3`.
+Then fill in the one-click login and SMS verification fields and point `FUYAO_BACKEND_DB` at `/opt/fuyao-backend/shared/fuyao.sqlite3`.
+
+For the current product rule, keep:
+
+- `FUYAO_DAILY_QUOTA_ENABLED=false`
+- `FUYAO_DAILY_CHAPTER_LIMIT=10` only as a legacy compatibility value; it is no longer the main unlock rule
 
 Important for one-click login:
 
@@ -53,11 +58,31 @@ Important for one-click login:
 - backend only needs `AccessKey ID` and `AccessKey Secret` to call `GetMobile`
 - iOS SDK still needs the number-auth scheme info / SDK key from Aliyun console, but that is held on the client side
 
+Important for SMS fallback login:
+
+- `FUYAO_SMS_PROVIDER` should be `aliyun`
+- `FUYAO_ALIYUN_SMS_SIGN_NAME` is required
+- `FUYAO_ALIYUN_SMS_TEMPLATE_CODE` is required
+- the Aliyun SMS verification template should include the verification code variable, usually `${code}`
+- if the template also renders validity minutes, keep `FUYAO_ALIYUN_SMS_TEMPLATE_PARAM_MINUTES_KEY` aligned with the template variable, usually `min`
+
 Server flow:
 
 - iOS SDK performs one-click login and gets `accessToken`
 - backend exchanges `accessToken` for phone number with `GetMobile`
 - success then creates local session
+
+SMS fallback flow:
+
+- backend sends code with `SendSmsVerifyCode`
+- backend verifies code with `CheckSmsVerifyCode`
+- success then creates local session in the same user/session tables
+
+Legacy usage compatibility:
+
+- `POST /v1/usage/consume` and `POST /v1/usage/rollback` are still deployed
+- with `FUYAO_DAILY_QUOTA_ENABLED=false`, activated users are no longer blocked by daily quota
+- auth/status payloads still contain legacy quota fields, but clients should key product expression off `permissions` and `entitlement.dailyQuotaEnabled`
 
 ## 4. Bootstrap
 
