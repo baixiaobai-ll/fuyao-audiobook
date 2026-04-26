@@ -73,7 +73,7 @@ swift build
 - `Config.plist.template`
 - `Docs/项目导航.md`
 
-当前文本分析服务固定使用 `Qwen`。
+当前文本分析默认使用 Moonshot `Kimi K2.6`（`AI_PROVIDER=kimi`），备选 `Qwen`。
 
 ## 最近同步过的项目现实
 

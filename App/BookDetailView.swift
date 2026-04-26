@@ -730,7 +730,6 @@ struct BookDetailView: View {
         switch Config.aiProvider {
         case .kimi: providerName = "Kimi"
         case .qwen: providerName = "通义千问"
-        case .local: providerName = "本地规则"
         }
 
         if message.contains("分析超时") || message.contains("\(providerName) 分析超时") {
@@ -759,11 +758,47 @@ struct BookDetailView: View {
     }
 
     private func prepareVoiceSettings() {
-        editableVoiceBindings = shelfBook.voiceBindings
-        if editableVoiceBindings[VoiceManager.narrationBindingKey] == nil,
-           let defaultNarration = VoiceLibrary.getPreferredNarrationVoice(for: Config.ttsProvider) ?? availableVoices.first {
-            editableVoiceBindings[VoiceManager.narrationBindingKey] = defaultNarration.id
+        var bindings = shelfBook.voiceBindings
+
+        // 把历史里残留的、已下线的讯飞 voiceId 透明迁移到当前白名单内，
+        // 避免用户进设置面板看到未知/无效的 voiceId（且下次保存即写回新 ID）。
+        let validVoiceIds = Set(availableVoices.map(\.id))
+        for (roleKey, voiceId) in bindings {
+            guard !validVoiceIds.contains(voiceId) else { continue }
+            let mapped = VoiceLibrary.compatibleXfyunSuperVoiceId(for: voiceId)
+            if validVoiceIds.contains(mapped) {
+                bindings[roleKey] = mapped
+            } else if let fallback = VoiceLibrary.getPreferredNarrationVoice(for: Config.ttsProvider)?.id
+                ?? availableVoices.first?.id {
+                bindings[roleKey] = fallback
+            }
         }
+
+        // 历史 chunk 分析里 Kimi 偶尔把"角色名 + 动作短语"整段塞进 speaker，
+        // 例如 "李萍惨然一笑"、"陆鸣接过酒杯"。这类脏 key 会以独立 entry 出现在配音设置里。
+        // 这里把所有非旁白槽 key 走一次 cleanedName 兜底归一：
+        //   - cleanedName 后还原到 "李萍" / "陆鸣"，与已有同名 key 合并
+        //   - 已有同名 entry 时，**保留先存在的那个 voiceId**（用户更可能在那里手动配过），删除脏 key
+        //   - 没有同名 entry 时，把 voiceId 迁过去再删脏 key
+        let dirtyRoleKeys = bindings.keys.filter { roleKey in
+            guard roleKey != VoiceManager.narrationBindingKey else { return false }
+            let cleaned = RoleIdentity.cleanedName(roleKey)
+            return !cleaned.isEmpty && cleaned != roleKey
+        }
+        for dirtyKey in dirtyRoleKeys {
+            guard let voiceId = bindings[dirtyKey] else { continue }
+            let cleaned = RoleIdentity.cleanedName(dirtyKey)
+            if bindings[cleaned] == nil {
+                bindings[cleaned] = voiceId
+            }
+            bindings.removeValue(forKey: dirtyKey)
+        }
+
+        if bindings[VoiceManager.narrationBindingKey] == nil,
+           let defaultNarration = VoiceLibrary.getPreferredNarrationVoice(for: Config.ttsProvider) ?? availableVoices.first {
+            bindings[VoiceManager.narrationBindingKey] = defaultNarration.id
+        }
+        editableVoiceBindings = bindings
     }
 
     private func addCurrentBookToShelf() {

@@ -7,9 +7,10 @@
     <!-- ==================== -->
 
     <!-- AI 分析服务 API 密钥 -->
-    <!-- 获取方式: 阿里云 DashScope / 通义千问控制台 -->
+    <!-- 获取方式: Moonshot Kimi 开放平台 https://platform.moonshot.cn/ -->
+    <!-- 也可用专用键名 KIMI_API_KEY / MOONSHOT_API_KEY 覆盖（优先级高于 AI_API_KEY） -->
     <key>AI_API_KEY</key>
-    <string>your-qwen-api-key-here</string>
+    <string>your-kimi-api-key-here</string>
 
     <!-- TTS 服务 API 密钥 -->
     <!-- Azure: https://portal.azure.com/ (创建语音服务资源) -->
@@ -21,9 +22,9 @@
     <!-- 服务提供商配置 -->
     <!-- ==================== -->
 
-    <!-- AI 服务提供商: 固定为 qwen -->
+    <!-- AI 服务提供商: 默认 kimi（Moonshot Kimi K2.6），可选 qwen -->
     <key>AI_PROVIDER</key>
-    <string>qwen</string>
+    <string>kimi</string>
 
     <!-- TTS 服务提供商: azure, xfyun, openai -->
     <key>TTS_PROVIDER</key>
@@ -38,7 +39,7 @@
     <!-- 可选配置 -->
     <!-- ==================== -->
 
-    <!-- 文本分析当前固定走通义千问，无需额外 Base URL 配置 -->
+    <!-- 文本分析默认走 Kimi K2.6（api.moonshot.cn），如需切 Qwen 把 AI_PROVIDER 改成 qwen 即可 -->
 
     <!-- ==================== -->
     <!-- 号码认证配置 -->

@@ -18,21 +18,6 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
 
     private let aiService: AIAnalysisService
     private let cache: AnalysisCache
-    private static let speechVerbMarkers = [
-        "笑着说", "轻声说", "低声说", "沉声说", "冷冷说道", "轻声说道", "低声说道",
-        "沉声说道", "提醒道", "解释道", "吩咐道", "喃喃道", "嘀咕道", "回头说道",
-        "开口说道", "回应道", "回道", "应道", "说道", "说", "问道", "问", "答道",
-        "答", "喊道", "喊", "叫道", "叫", "道"
-    ]
-    private static let speakerStyleSuffixes = [
-        "笑着", "轻声", "低声", "沉声", "冷冷地", "冷冷", "淡淡地", "淡淡",
-        "认真地", "认真", "无奈地", "无奈", "平静地", "平静", "咬牙切齿地", "咬牙切齿"
-    ]
-    private static let removableHonorificPrefixes = ["老", "小", "阿"]
-    private static let removableHonorificSuffixes = [
-        "先生", "小姐", "姑娘", "夫人", "老师", "医生", "警官", "将军", "老板", "掌柜",
-        "殿下", "大人", "公子", "少爷", "哥哥", "姐姐", "弟弟", "妹妹", "叔叔", "阿姨"
-    ]
     private static let uncertainSpeakerNames: Set<String> = [
         "他", "她", "它", "他们", "她们", "对方", "对面", "众人", "所有人", "两人",
         "二人", "三人", "一人", "男人", "女人", "少年", "少女", "青年", "老人",
@@ -43,6 +28,14 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     init(aiService: AIAnalysisService, cache: AnalysisCache = AnalysisCache()) {
         self.aiService = aiService
         self.cache = cache
+    }
+
+    /// 当前 provider 在 dump 文件名里的标签（用于 KimiAnalysisDump/run_<provider>_<stamp>）。
+    private var dumpProviderTag: String {
+        switch aiService.provider {
+        case .kimi: return "kimi"
+        case .qwen: return "qwen"
+        }
     }
 
     /// 分析小说文本
@@ -65,13 +58,18 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         let preprocessedText = preprocessText(text)
 
         // 分段处理（避免单次请求过大）。
-        // Kimi 在长文本结构化分析上更容易被“大块 + 并发”拖慢，
-        // 因此这里按 provider 收紧块大小，并限制并发度，优先保稳定。
+        // Kimi 在长文本结构化分析上更容易被“大块 + 并发”拖慢，因此按 provider 收紧块大小，并限制并发度，优先保稳定。
         let chunkSize = recommendedChunkSize
         let chunks = splitIntoChunks(preprocessedText, maxChunkSize: chunkSize)
 
+        // 本次 run 的原始记录落盘工具（chunk 输入 / Kimi prompt / 原始返回 / 解析结果）。
+        // 用于排查"旁白被错认 / speaker 给错"等纯靠 console 日志看不清楚的问题。
+        // 创建失败（沙盒受限）时返回 nil，分析流程不受影响。
+        let dumpWriter = AnalysisDumpWriter(provider: dumpProviderTag)
+
         var allSegments: [TextSegment] = []
-        var allCharacters: Set<Character> = []
+        // 跨 chunk 合并使用 canonicalKey 主键，避免同一角色因不同 UUID 被当作两个角色。
+        var allCharactersByKey: [String: Character] = [:]
         var allScenes: [NovelScene] = []
         var segmentOrder = 0
 
@@ -85,7 +83,7 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             func schedule(_ index: Int) {
                 let chunk = chunks[index]
                 group.addTask {
-                    let result = try await self.analyzeChunk(chunk, chunkIndex: index)
+                    let result = try await self.analyzeChunk(chunk, chunkIndex: index, dump: dumpWriter)
                     return (index, result)
                 }
             }
@@ -105,13 +103,41 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         }
 
         for (_, result) in chunkResults.sorted(by: { $0.index < $1.index }) {
-            let orderedSegments = result.segments.map { segment in
-                var updated = segment
-                updated = TextSegment(
+            // 1) 把当前 chunk 的角色按 canonicalKey 合并到全局表，已存在则保留首次出现的 Character（含其 UUID）。
+            for character in result.characters {
+                let key = mergeKey(forCharacterName: character.name)
+                if allCharactersByKey[key] == nil {
+                    allCharactersByKey[key] = character
+                } else if var existing = allCharactersByKey[key] {
+                    // 后出现的 chunk 补上 Kimi 标签 / 叙事项（首段未写时常见）
+                    var changed = false
+                    if existing.voiceArchetype == nil, let t = character.voiceArchetype {
+                        existing.voiceArchetype = t
+                        changed = true
+                    }
+                    if existing.narrativeRole == nil, let r = character.narrativeRole {
+                        existing.narrativeRole = r
+                        changed = true
+                    }
+                    if changed { allCharactersByKey[key] = existing }
+                }
+            }
+
+            // 2) 重写本 chunk segments 的 speaker，让其引用全局表中的稳定 Character；
+            //    这样 PlaybackAnalysisIndexBuilder 用 segment.speaker.id 反查 characters 才不会丢人。
+            let orderedSegments = result.segments.map { segment -> TextSegment in
+                let canonicalSpeaker: Character?
+                if let original = segment.speaker {
+                    let key = mergeKey(forCharacterName: original.name)
+                    canonicalSpeaker = allCharactersByKey[key] ?? original
+                } else {
+                    canonicalSpeaker = nil
+                }
+                let updated = TextSegment(
                     id: segment.id,
                     text: segment.text,
                     type: segment.type,
-                    speaker: segment.speaker,
+                    speaker: canonicalSpeaker,
                     emotion: segment.emotion,
                     scene: segment.scene,
                     order: segmentOrder
@@ -121,8 +147,25 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             }
 
             allSegments.append(contentsOf: orderedSegments)
-            allCharacters.formUnion(result.characters)
             allScenes.append(contentsOf: result.scenes)
+        }
+
+        // 3) 全部 chunk 合并完后，用最终的 `allCharactersByKey` 再刷一遍 `segment.speaker`。
+        //    否则：后段 chunk 才补上的 `voiceArchetype` 无法反映到前段已生成的对话副本上。
+        let finalCharactersByKey = allCharactersByKey
+        allSegments = allSegments.map { seg in
+            guard let sp = seg.speaker else { return seg }
+            let key = mergeKey(forCharacterName: sp.name)
+            guard let global = finalCharactersByKey[key] else { return seg }
+            return TextSegment(
+                id: seg.id,
+                text: seg.text,
+                type: seg.type,
+                speaker: global,
+                emotion: seg.emotion,
+                scene: seg.scene,
+                order: seg.order
+            )
         }
 
         // 按顺序排序
@@ -137,9 +180,10 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             segments: allSegments
         )
 
+        let mergedCharacters = Array(allCharactersByKey.values)
         let result = AnalysisResult(
             segments: allSegments,
-            characters: Array(allCharacters),
+            characters: mergedCharacters,
             scenes: mergedScenes,
             metadata: finalMetadata
         )
@@ -147,7 +191,17 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         // 缓存结果
         cache.store(result, key: cacheKey)
 
-        print("✅ 分析完成: \(allSegments.count) 个片段, \(allCharacters.count) 个角色")
+        print("✅ 分析完成: \(allSegments.count) 个片段, \(mergedCharacters.count) 个角色")
+
+        if let dumpWriter {
+            let summary = renderRunSummary(
+                provider: dumpProviderTag,
+                chunks: chunks,
+                segments: allSegments,
+                characters: mergedCharacters
+            )
+            dumpWriter.writeRunSummary(summary)
+        }
 
         return result
     }
@@ -155,31 +209,191 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     // MARK: - Private Methods
 
     /// 分析单个文本块
-    private func analyzeChunk(_ chunk: String, chunkIndex: Int) async throws -> ChunkAnalysisResult {
+    ///
+    /// 当 JSON 解析失败（极少数情况下 Kimi 可能因网络抖动返回非合法 JSON）时：
+    ///   1. 先让 Kimi 再请求若干次（默认 2 次），挡掉单次抖动；
+    ///   2. 仍失败时**直接降级为整块旁白**（speaker=nil，按段落/句子切成 ≤200 字符的 narration），
+    ///      让默认旁白音色把整段念出去。
+    ///      已彻底删除 LocalRuleAnalysisService：本地正则会把"陆鸣固执的摇了摇头道："
+    ///      这类引导语错抽成 speaker，污染角色识别和音色映射，体感比"全旁白"差得多。
+    private func analyzeChunk(_ chunk: String, chunkIndex: Int, dump: AnalysisDumpWriter? = nil) async throws -> ChunkAnalysisResult {
         let prompt = buildAnalysisPrompt(for: chunk)
-        let response = try await aiService.analyze(prompt: prompt)
-        do {
-            return try parseAnalysisResponse(response, originalText: chunk)
-        } catch {
-            let previewLimit = 600
-            let preview = response.count > previewLimit
-                ? String(response.prefix(previewLimit)) + "\n...<truncated>"
-                : response
-            let responseLength = response.count
-            let braceBalance = response.reduce(into: 0) { partial, character in
-                if character == "{" { partial += 1 }
-                if character == "}" { partial -= 1 }
+        let maxJsonRetries = 2
+
+        // 提前把输入和 prompt 落盘，便于"返回出问题前 / 后"对比。
+        dump?.writeChunkInput(index: chunkIndex, text: chunk)
+        dump?.writeChunkPrompt(index: chunkIndex, prompt: prompt)
+
+        var lastDiagnostic: (length: Int, balance: Int, preview: String, error: Error)?
+
+        for attempt in 1...(maxJsonRetries + 1) {
+            let response = try await aiService.analyze(prompt: prompt)
+            // 不论解析成功与否都把原始返回落盘：成功路径只保留最后一份，失败路径每次重试单独保留。
+            dump?.writeChunkRawResponse(index: chunkIndex, attempt: attempt, response: response)
+            do {
+                let parsed = try parseAnalysisResponse(response, originalText: chunk)
+                dump?.writeChunkParsed(
+                    index: chunkIndex,
+                    parsedDescription: renderParsedDescription(chunkIndex: chunkIndex, result: parsed)
+                )
+                return parsed
+            } catch {
+                let previewLimit = 600
+                let preview = response.count > previewLimit
+                    ? String(response.prefix(previewLimit)) + "\n...<truncated>"
+                    : response
+                let balance = response.reduce(into: 0) { partial, character in
+                    if character == "{" { partial += 1 }
+                    if character == "}" { partial -= 1 }
+                }
+                lastDiagnostic = (response.count, balance, preview, error)
+
+                if attempt <= maxJsonRetries {
+                    print("⚠️ 第 \(chunkIndex + 1) 个分块 JSON 解析失败 (尝试 \(attempt)/\(maxJsonRetries + 1))，重新请求 Kimi：\(error.localizedDescription) 花括号平衡=\(balance)")
+                    continue
+                }
             }
-            print("""
-            ⚠️ 第 \(chunkIndex + 1) 个分析分块 JSON 解析失败，回退到本地规则分析：\(error.localizedDescription)
-            📄 原始返回长度: \(responseLength) 字符
-            🧩 花括号平衡: \(braceBalance)
-            📄 原始返回预览:
-            \(preview)
-            """)
-            let localResponse = try await LocalRuleAnalysisService().analyze(prompt: prompt)
-            return try parseAnalysisResponse(localResponse, originalText: chunk)
         }
+
+        let diagnostic = lastDiagnostic
+        let diagnosticMessage = """
+        第 \(chunkIndex + 1) 个分块经 \(maxJsonRetries + 1) 次重试仍无法解析，整块降级为旁白单段（speaker=nil）。
+        - error: \(diagnostic?.error.localizedDescription ?? "未知错误")
+        - 原文输入: \(chunk.count) 字符
+        - 原始返回长度: \(diagnostic?.length ?? 0) 字符
+        - 花括号平衡: \(diagnostic?.balance ?? 0)
+
+        原始返回预览:
+        \(diagnostic?.preview ?? "")
+        """
+        print("❌ \(diagnosticMessage)")
+        dump?.writeChunkError(index: chunkIndex, message: diagnosticMessage)
+        return makeNarrationFallbackChunk(originalText: chunk)
+    }
+
+    /// 把单个 chunk 的解析结果渲染为人眼可读的文本（segments + characters）。
+    private func renderParsedDescription(chunkIndex: Int, result: ChunkAnalysisResult) -> String {
+        var lines: [String] = []
+        lines.append("# Chunk #\(chunkIndex + 1) 解析结果")
+        lines.append("- segments: \(result.segments.count)")
+        lines.append("- characters: \(result.characters.count)")
+        lines.append("- scenes: \(result.scenes.count)")
+        lines.append("")
+        lines.append("## 角色")
+        if result.characters.isEmpty {
+            lines.append("（无）")
+        } else {
+            for character in result.characters {
+                let arch = character.voiceArchetype.map { "voiceArchetype=\($0.rawValue)" } ?? "voiceArchetype=—"
+                let nr = character.narrativeRole.map { "narrativeRole=\($0.rawValue)" } ?? "narrativeRole=—"
+                lines.append("- \(character.name) | gender=\(character.gender.rawValue) | \(arch) | \(nr)")
+            }
+        }
+        lines.append("")
+        lines.append("## Segments")
+        for (idx, segment) in result.segments.enumerated() {
+            let speakerLabel: String
+            if let speaker = segment.speaker {
+                speakerLabel = "\(speaker.name)[\(speaker.gender.rawValue)]"
+            } else {
+                speakerLabel = "—"
+            }
+            let preview = segment.text.count > 80
+                ? String(segment.text.prefix(80)) + "…"
+                : segment.text
+            lines.append("[\(idx + 1)] type=\(segment.type.rawValue) speaker=\(speakerLabel) emotion=\(segment.emotion.rawValue)")
+            lines.append("    text: \(preview)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 整次 run 的汇总（chunk 数 / 段数 / 角色数 / 角色清单）。
+    fileprivate func renderRunSummary(
+        provider: String,
+        chunks: [String],
+        segments: [TextSegment],
+        characters: [Character]
+    ) -> String {
+        var lines: [String] = []
+        lines.append("- provider: \(provider)")
+        lines.append("- chunks: \(chunks.count)")
+        lines.append("- segments: \(segments.count)")
+        lines.append("- characters: \(characters.count)")
+        lines.append("")
+        lines.append("## 角色清单")
+        if characters.isEmpty {
+            lines.append("（无）")
+        } else {
+            for character in characters {
+                let arch = character.voiceArchetype.map { "voiceArchetype=\($0.rawValue)" } ?? "voiceArchetype=—"
+                let nr = character.narrativeRole.map { "narrativeRole=\($0.rawValue)" } ?? "narrativeRole=—"
+                lines.append("- \(character.name) | gender=\(character.gender.rawValue) | \(arch) | \(nr)")
+            }
+        }
+        lines.append("")
+        lines.append("## 各 chunk 字符数")
+        for (idx, chunk) in chunks.enumerated() {
+            lines.append("- chunk_\(String(format: "%03d", idx)): \(chunk.count) 字符")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// JSON 兜底：把整块文本切成若干 narration segment 直接交给旁白音色播。
+    ///
+    /// - 切分粒度：按段落 / 中文句号问号感叹号分号软切分，避免单段过长拖慢 TTS 节奏。
+    /// - 所有 segment 一律 `speaker = nil`，让 `AudioBookGenerator.buildPlaybackItem`
+    ///   走 `narrationVoice` 路径，使用书籍配音方案里的旁白音色。
+    /// - characters / scenes 留空，不会污染跨 chunk 的角色合并表与场景表。
+    private func makeNarrationFallbackChunk(originalText: String) -> ChunkAnalysisResult {
+        let pieces = splitTextForNarrationFallback(originalText)
+        let fallbackScene = NovelScene(type: .peaceful, description: "未识别段落", intensity: 0.4)
+        let segments: [TextSegment] = pieces.enumerated().map { index, text in
+            TextSegment(
+                id: UUID(),
+                text: text,
+                type: .narration,
+                speaker: nil,
+                emotion: .neutral,
+                scene: fallbackScene,
+                order: index
+            )
+        }
+        return ChunkAnalysisResult(
+            segments: segments,
+            characters: [],
+            scenes: segments.isEmpty ? [] : [fallbackScene]
+        )
+    }
+
+    /// 按段落 / 句号软切，单段最大 200 字。
+    private func splitTextForNarrationFallback(_ text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let paragraphs = trimmed
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let maxLen = 200
+        var pieces: [String] = []
+        for paragraph in paragraphs {
+            if paragraph.count <= maxLen {
+                pieces.append(paragraph)
+                continue
+            }
+            var buffer = ""
+            for ch in paragraph {
+                buffer.append(ch)
+                if buffer.count >= maxLen, "。！？!?；;".contains(ch) {
+                    pieces.append(buffer)
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+            let tail = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty { pieces.append(tail) }
+        }
+        return pieces
     }
 
     /// 构建分析提示词
@@ -203,6 +417,20 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         2. 提取所有角色信息：
            - 姓名
            - 性别（男/女/中性/儿童/老年）
+           - **音色人设标签 `voiceArchetype`（必填）**：只描述「适合哪种听感人设」，**禁止**填写讯飞 vcn、禁止填中文音色商品名；取值只能是以下 **7 个英文 snake_case 之一**：
+             - `elder_male`：老年男性 / 长辈 / 掌门 / 族长 / 老叟
+             - `elder_female`：老年女性 / 婆婆 / 嬷嬷 / 太后类
+             - `boy_young_male`：男童、小厮、店小二、少年感男配、音色偏轻的男角
+             - `girl_young_female`：女童、少女、年轻女配
+             - `adult_male`：成年男主、将军、沉稳男配、成年反派男等
+             - `adult_female`：成年女主、温柔女性、贵妇、师姐等
+             - `neutral`：性别年龄均无法从文本判断的龙套，或一闪而过的路人
+           - `voiceArchetype` 必须与文本描写一致；与 `gender` 冲突时**以文本事实为准**并修正 `gender`（例如文本明确是少女则 `gender` 用 `female`、`voiceArchetype` 用 `girl_young_female`，不要标 `child`）。
+           - **`narrativeRole`（必填）**：在本书语境下的**叙事位阶**，用于给客户端**区分男一号与男配**（同填 `adult_male` 时也不会抢错音色）：
+             - `primary`：**全书视点主角**（如第一男主/第一女主/剧情围绕的核心人物，整章里戏份最多、视角跟随的那位）
+             - `secondary`：有台词或反复出场的重要**配角**（家主/师父/反派的得力手下等，但**不是**第一男主/女主时）
+             - `tertiary`：只出现少数次的龙套、路人、一次性 NPC
+             - 若整章有**一个以上**成年男性，必须至少有一个是 `primary`（能判断出来的情况下），**不要把真正的男主标成 `secondary` 而配角标成 `primary`**
 
         3. 识别场景变化
 
@@ -210,11 +438,29 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         - 必须只输出 JSON，不要输出解释、前后缀、markdown
         - `type` 只能是 `dialogue|narration|description|thought`
         - 只有当说话人能稳定确定时才填写 `speaker`，不确定时必须返回 `null` 或空字符串，不要猜测
-        - 不要把“他/她/对方/众人/男人/女人/少年/少女”等泛指称呼当成稳定角色名
+        - 不要把“他/她/对方/众人/男人/女人”等无任何修饰的纯泛指代词当成稳定角色名
         - 同一角色请保持命名一致，不要一会儿用全名、一会儿用泛称或临时称呼
+        - 当一段对话紧跟另一段同一人说的对话、中间没有场景切换或新的引导语时，`speaker` 必须保持不变，不要漏填或换人
+        - 同一角色若出现尊称变体（如“张三/老张/张先生/三哥”），始终使用最完整的本名作为 `speaker`，不要拆成多个角色
+        - **`speaker` 字段：优先用本名，没本名时可以用稳定外貌代号**，但禁止包含任何动词、动作、表情、姿态、副词、助词或标点：
+          - 合法本名（≤6 字）：`李萍`、`陆鸣`、`李博文`、`上官云霄`
+          - 合法外貌代号（≤8 字，仅当角色没有本名但本章会反复说话时使用）：`鸡冠头男`、`光头壮汉`、`独眼老者`、`白衣少女`、`瘸腿大叔`、`黑袍人`
+          - **同一无名角色在整段文本中必须使用完全相同的代号**，不要写一次叫"光头壮汉"、下一次又改成"光头大汉"或"那壮汉"
+          - 非法：`李萍惨然一笑`、`陆鸣接过酒杯`、`李博文踌躇了一下`、`陈伯笑着说`、`王二点了点头`、`一个声音`、`身影`
+          - 遇到非法情况：把动作描写放到上一段 narration 里，把 `speaker` 只填角色名/代号本身；如果连稳定代号都给不出（一闪而过的群众、模糊的"一道声音"），`speaker` 必须填 `null`
+        - **重要：`type=dialogue` 段允许 `speaker=null`**——系统会用专门的"未命名对话"音色（不是旁白音色）朗读，所以与其乱猜一个不准的 speaker，不如老实填 `null`
+        - **`gender` 字段填写规则（按优先级判断，命中即用）**：
+          1. **`elder`**：文本里有**明确的"年长 + 男性"标记**——"老者/老翁/老叟/老头/白发苍苍/须发皆白/年逾花甲/古稀/耄耋/老前辈/老爷子"等措辞，或被其他角色尊称为"X 老 / 老 X / X 公 / X 翁"。仅适用于**男性老者**；老年女性请填 `female`，由系统挑成熟女声兜底。
+          2. **`child`**：文本里有**明确的"幼童 / 童年"标记**——"孩童/小孩/稚童/孩子/几岁/十来岁/总角/垂髫/童音"等措辞，或上下文明确说明是未成年的孩子在说话。**少年 / 少女（青春期）不算 child**，应该按性别填 `male` / `female`。
+          3. **`male`**：除上述两条之外，文本里有明确男性信号（"他"代词、"少年/汉子/兄长/小哥/书生/将军/男弟子"等显式称呼、外貌描写）。
+          4. **`female`**：除上述两条之外，文本里有明确女性信号（"她"代词、"少女/姑娘/小姐/女郎/婢女/女子"等显式称呼、外貌描写）。
+          5. **`neutral`**：以上都不满足时**一律填 neutral**，不要根据角色名字猜性别、年龄。
+          - 关键约束：`elder` / `child` 是**强标签**，只有文本里出现明确的年龄措辞才能用；不要因为名字带"老"字（"老张"是尊称不一定是老人）或"小"字（"小李"是昵称不一定是小孩）就误判。宁可填 `male` / `neutral`，也不要乱标 `elder` / `child`。
         - `emotion` 只能是 `neutral|happy|sad|angry|excited|fearful|surprised|tender`
         - `sceneType` 只能是 `peaceful|tense|battle|romantic|mysterious|sad|festive`
         - `gender` 只能是 `male|female|neutral|child|elder`
+        - `voiceArchetype` 只能是 `elder_male|elder_female|boy_young_male|girl_young_female|adult_male|adult_female|neutral`
+        - `narrativeRole` 只能是 `primary|secondary|tertiary`
         - `sceneIntensity` 必须是 0.0 到 1.0 之间的小数
 
         请以 JSON 格式返回，结构如下：
@@ -232,7 +478,9 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
           "characters": [
             {
               "name": "角色名",
-              "gender": "male|female|neutral|child|elder"
+              "gender": "male|female|neutral|child|elder",
+              "voiceArchetype": "adult_male",
+              "narrativeRole": "primary"
             }
           ]
         }
@@ -259,23 +507,47 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         var characters: Set<Character> = []
         var scenes: [NovelScene] = []
         var knownCharacterGenders: [String: Character.Gender] = [:]
+        var knownCharacterArchetypes: [String: VoiceArchetypeTag] = [:]
+        var knownCharacterNarrativeRoles: [String: NarrativeRole] = [:]
 
         for charData in aiResult.characters {
             guard let stableName = stableSpeakerName(from: charData.name) else { continue }
             let normalizedGender = normalizeGender(charData.gender)
             let key = canonicalCharacterKey(for: stableName)
+            let normalizedArchetype = normalizeVoiceArchetype(charData.voiceArchetype)
+            let normalizedNarrative = normalizeNarrativeRole(charData.narrativeRole)
             if !key.isEmpty, knownCharacterGenders[key] == nil {
                 knownCharacterGenders[key] = normalizedGender
+            }
+            if !key.isEmpty, let arch = normalizedArchetype, knownCharacterArchetypes[key] == nil {
+                knownCharacterArchetypes[key] = arch
+            }
+            if !key.isEmpty, let nr = normalizedNarrative, knownCharacterNarrativeRoles[key] == nil {
+                knownCharacterNarrativeRoles[key] = nr
             }
             _ = upsertCharacter(
                 named: stableName,
                 gender: normalizedGender,
+                voiceArchetype: normalizedArchetype,
+                narrativeRole: normalizedNarrative,
                 characters: &characters
             )
         }
 
         for (index, segmentData) in aiResult.segments.enumerated() {
-            let normalizedType = normalizeSegmentType(segmentData.type, text: segmentData.text)
+            var normalizedType = normalizeSegmentType(segmentData.type, text: segmentData.text)
+            // Bug C 修复：Kimi 偶尔把"啊！/嗯？/哈哈/咳咳"这种拟声词标成 dialogue + speaker=null。
+            // 这些在小说里一般是描述性叹词（壮汉惨叫、吃惊倒抽气），让它们走"未命名对话女声"
+            // 听感会非常违和。识别到这种段落后统一改成 narration，让旁白音色朗读。
+            // 判定条件三选一全满足：
+            //   1. type 已被归一化为 dialogue
+            //   2. speaker 字段为空（Kimi 拿不准谁说的）
+            //   3. 文本去掉标点空白后**仅由"叹词字"构成**且总长 ≤ 4 字
+            if normalizedType == .dialogue,
+               (segmentData.speaker?.isEmpty ?? true) || stableSpeakerName(from: segmentData.speaker ?? "") == nil,
+               Self.isOnomatopoeicShortUtterance(segmentData.text) {
+                normalizedType = .narration
+            }
             let normalizedSceneType = normalizeSceneType(segmentData.sceneType, text: segmentData.text)
             let normalizedEmotion = normalizeEmotion(
                 segmentData.emotion,
@@ -298,10 +570,15 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             if normalizedType == .dialogue,
                let speakerName = segmentData.speaker,
                let resolvedSpeakerName = stableSpeakerName(from: speakerName) {
-                let gender = knownCharacterGenders[canonicalCharacterKey(for: resolvedSpeakerName)] ?? .neutral
+                let cKey = canonicalCharacterKey(for: resolvedSpeakerName)
+                let gender = knownCharacterGenders[cKey] ?? .neutral
+                let arch = knownCharacterArchetypes[cKey]
+                let nr = knownCharacterNarrativeRoles[cKey]
                 speaker = upsertCharacter(
                     named: resolvedSpeakerName,
                     gender: gender,
+                    voiceArchetype: arch,
+                    narrativeRole: nr,
                     characters: &characters
                 )
             }
@@ -365,25 +642,29 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         return chunks.isEmpty ? [text] : chunks
     }
 
+    /// 单次发给 Kimi 的原文 chunk 上限（字符）。
+    ///
+    /// `kimi-k2.6` 上下文窗口 256K（262144 token），输出 `max_tokens=32768` 已远超 30000 字符
+    /// 原文对应 JSON 的体积（约 ~30K 字符 ≈ 10K token），单次完整产出毫无压力。
+    /// 配合 thinking=disabled，单 chunk 端到端时延约 15-30s，并发 10 路足以让一整章一次性返回。
     private var recommendedChunkSize: Int {
         switch Config.aiProvider {
         case .kimi:
-            return 50000
+            return 30000
         case .qwen:
             return 2600
-        case .local:
-            return 3000
         }
     }
 
     private var recommendedAnalysisParallelism: Int {
         switch Config.aiProvider {
+        // Kimi 账户：并发 50、RPM 200、TPM 2,000,000、TPD 无限制。
+        // 30000 字符 chunk 下单本书通常 ≤ 3 个 chunks，并发 10 路对账户上限完全不构成压力，
+        // 多书同时生成时也留足头部余量。
         case .kimi:
-            return 1
+            return 10
         case .qwen:
             return 2
-        case .local:
-            return 4
         }
     }
 
@@ -451,11 +732,51 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         )
     }
 
+    /// 用来识别短拟声词类对话（"啊！/嗯？/哈哈/咳咳/哎呀/呃..."）的字集。
+    /// 这些字在小说里出现时，绝大多数情况是动作描写或情绪叹词，不是真正的"对话内容"。
+    /// 命中条件下我们把段落改成 narration，让旁白音色朗读，避免被未命名对话音色错读。
+    /// 用 `Set<String>` 而不是 `Set<Character>`：部分汉字字符在 Swift 字面量场景下会被
+    /// 默认当成 `String` 推断，统一用 String 集合避免类型推断踩坑。
+    private static let onomatopoeicChars: Set<String> = [
+        "啊", "嗯", "哎", "哦", "呃", "咦", "唉", "嘿", "哈", "呀", "哼",
+        "呜", "嘻", "哟", "喂", "嗨", "咳", "哧", "噢", "哇", "呕", "呸",
+        "呵", "哒", "嗷", "啧", "嘁", "嗤", "嘘", "嘶", "啐", "哽", "咕",
+        "呢", "啪", "嗒", "咣", "咚", "嘎"
+    ]
+
+    /// 检查给定文本是否是"短拟声词类对话"——纯由叹词字+标点+空白组成且总长 ≤ 4 个汉字。
+    /// 命中时调用方应把对应 segment 从 dialogue 改成 narration。
+    ///
+    /// 例：✅ "啊！" / "嗯？" / "哈哈哈！" / "咳咳。" / "哎呀！"
+    /// 例：❌ "快走！"（"快走"非叹词字，不归并）
+    /// 例：❌ "啊，你竟然敢..."（汉字数 > 4，不归并）
+    private static func isOnomatopoeicShortUtterance(_ text: String) -> Bool {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return false }
+
+        var meaningfulCharCount = 0
+        for char in cleaned {
+            if char.isWhitespace { continue }
+            // 跳过中英文标点 / 符号
+            if char.isPunctuation || char.isSymbol { continue }
+            // 任意"非叹词字"字符直接放行（多半是真对话内容）
+            if !onomatopoeicChars.contains(String(char)) { return false }
+            meaningfulCharCount += 1
+        }
+
+        return meaningfulCharCount > 0 && meaningfulCharCount <= 4
+    }
+
+    /// 缓存版本号：每次修改分析 prompt 或客户端清洗规则（cleanedName / canonicalKey）时递增，
+    /// 旧版本缓存会被自动跳过，避免历史结果里残留的"李萍惨然一笑"这类脏数据继续生效。
+    private static let cacheVersion = "v12-2026-04-27-narrative-lead"
+
     /// 生成缓存键
     private func generateCacheKey(for text: String) -> String {
         let canonical = Self.canonicalTextForPlayback(text)
-        guard let data = canonical.data(using: .utf8) else {
-            return String(canonical.hashValue)
+        let versioned = "\(Self.cacheVersion)|\(canonical)"
+        guard let data = versioned.data(using: .utf8) else {
+            return String(versioned.hashValue)
         }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         data.withUnsafeBytes { rawBuffer in
@@ -596,53 +917,50 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
         }
     }
 
+    /// Kimi `voiceArchetype` 归一化；无法识别时返回 `nil`，客户端音色分配退回 `gender` 推断。
+    private func normalizeVoiceArchetype(_ raw: String?) -> VoiceArchetypeTag? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        let normalized = raw.lowercased()
+        if let tag = VoiceArchetypeTag(rawValue: normalized) {
+            return tag
+        }
+        switch normalized {
+        case "old_male", "old_man", "male_elder":
+            return .elderMale
+        case "old_female", "old_woman", "female_elder":
+            return .elderFemale
+        case "young_male", "boy", "child_male", "male_child":
+            return .boyOrYoungMale
+        case "young_female", "girl", "child_female", "female_child":
+            return .girlOrYoungFemale
+        case "mature_male":
+            return .adultMale
+        case "mature_female":
+            return .adultFemale
+        default:
+            return nil
+        }
+    }
+
+    /// Kimi `narrativeRole` 归一化；无法识别时返回 `nil`。
+    private func normalizeNarrativeRole(_ raw: String?) -> NarrativeRole? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        let s = raw.lowercased()
+        if let r = NarrativeRole(rawValue: s) { return r }
+        switch s {
+        case "lead", "main", "protagonist", "hero", "heroine", "viewpoint", "pov", "第一主角", "主角":
+            return .primary
+        case "supporting", "side", "major", "deuteragonist", "配角", "男二", "女二":
+            return .secondary
+        case "minor", "extra", "cameo", "walk_on", "npc", "龙套", "路人":
+            return .tertiary
+        default:
+            return nil
+        }
+    }
+
     private func cleanSpeakerName(_ raw: String) -> String {
-        var candidate = raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "'", with: "")
-            .replacingOccurrences(of: "“", with: "")
-            .replacingOccurrences(of: "”", with: "")
-            .replacingOccurrences(of: "‘", with: "")
-            .replacingOccurrences(of: "’", with: "")
-            .replacingOccurrences(of: "「", with: "")
-            .replacingOccurrences(of: "」", with: "")
-            .replacingOccurrences(of: "『", with: "")
-            .replacingOccurrences(of: "』", with: "")
-            .replacingOccurrences(of: "（", with: "")
-            .replacingOccurrences(of: "）", with: "")
-            .replacingOccurrences(of: "(", with: "")
-            .replacingOccurrences(of: ")", with: "")
-
-        candidate = candidate.replacingOccurrences(
-            of: "^[：:、，,。！？!？；;\\s]+|[：:、，,。！？!？；;\\s]+$",
-            with: "",
-            options: .regularExpression
-        )
-
-        if let splitIndex = Self.speechVerbMarkers
-            .compactMap({ marker in
-                candidate.range(of: marker).flatMap { range in
-                    range.lowerBound == candidate.startIndex ? nil : range.lowerBound
-                }
-            })
-            .min() {
-            candidate = String(candidate[..<splitIndex])
-        }
-
-        var trimmed = true
-        while trimmed {
-            trimmed = false
-            for suffix in Self.speakerStyleSuffixes {
-                if candidate.hasSuffix(suffix), candidate.count > suffix.count {
-                    candidate.removeLast(suffix.count)
-                    trimmed = true
-                    break
-                }
-            }
-        }
-
-        return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        RoleIdentity.cleanedName(raw)
     }
 
     private func stableSpeakerName(from raw: String) -> String? {
@@ -654,26 +972,17 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     }
 
     private func canonicalCharacterKey(for name: String) -> String {
-        let cleaned = cleanSpeakerName(name)
-        guard !cleaned.isEmpty else { return "" }
+        RoleIdentity.canonicalKey(forRawName: name)
+    }
 
-        var candidate = cleaned
-        for prefix in Self.removableHonorificPrefixes where candidate.hasPrefix(prefix) && candidate.count > prefix.count {
-            candidate.removeFirst(prefix.count)
-            break
-        }
-
-        let sortedSuffixes = Self.removableHonorificSuffixes.sorted { $0.count > $1.count }
-        for suffix in sortedSuffixes where candidate.hasSuffix(suffix) && candidate.count > suffix.count {
-            candidate.removeLast(suffix.count)
-            break
-        }
-
-        let normalized = candidate
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
-            .lowercased()
-        return normalized.isEmpty ? cleaned.lowercased() : normalized
+    /// 跨 chunk 合并使用的主键。canonicalKey 为空（罕见，名字仅含标点）时退化到清洗后小写名，
+    /// 再退化到原始名，避免多个无名角色被错误并到同一桶。
+    private func mergeKey(forCharacterName name: String) -> String {
+        let canonical = RoleIdentity.canonicalKey(forRawName: name)
+        if !canonical.isEmpty { return canonical }
+        let cleaned = RoleIdentity.cleanedName(name)
+        if !cleaned.isEmpty { return cleaned.lowercased() }
+        return name
     }
 
     private func isUncertainSpeakerName(_ raw: String) -> Bool {
@@ -710,6 +1019,8 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     private func upsertCharacter(
         named name: String,
         gender: Character.Gender,
+        voiceArchetype: VoiceArchetypeTag? = nil,
+        narrativeRole: NarrativeRole? = nil,
         characters: inout Set<Character>
     ) -> Character {
         let cleanedName = cleanSpeakerName(name)
@@ -718,9 +1029,22 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
             cleanSpeakerName($0.name) == cleanedName
                 || (!canonical.isEmpty && canonicalCharacterKey(for: $0.name) == canonical)
         }) {
+            var merged = existing
+            if let tag = voiceArchetype, merged.voiceArchetype == nil { merged.voiceArchetype = tag }
+            if let role = narrativeRole, merged.narrativeRole == nil { merged.narrativeRole = role }
+            if merged.voiceArchetype != existing.voiceArchetype || merged.narrativeRole != existing.narrativeRole {
+                characters.remove(existing)
+                characters.insert(merged)
+                return merged
+            }
             return existing
         }
-        let character = Character(name: cleanedName, gender: gender)
+        let character = Character(
+            name: cleanedName,
+            gender: gender,
+            voiceArchetype: voiceArchetype,
+            narrativeRole: narrativeRole
+        )
         characters.insert(character)
         return character
     }
@@ -752,6 +1076,10 @@ private struct AIAnalysisResponse: Codable {
     struct CharacterData: Codable {
         let name: String
         let gender: String
+        /// Kimi 音色人设标签；旧模型或省略时解码为 `nil`。
+        let voiceArchetype: String?
+        /// 叙事位阶；旧模型或省略时解码为 `nil`。
+        let narrativeRole: String?
     }
 }
 
@@ -790,15 +1118,6 @@ enum AnalysisError: LocalizedError {
                 || message.contains("HTTP 504")
         case .invalidResponse:
             return false
-        }
-    }
-
-    var allowsLocalFallback: Bool {
-        switch self {
-        case .invalidResponse, .networkError, .requestTimedOut(_, _):
-            return true
-        case .apiError(let message):
-            return !message.contains("鉴权失败")
         }
     }
 }

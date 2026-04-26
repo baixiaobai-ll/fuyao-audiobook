@@ -65,13 +65,14 @@ final class FuyaoLiveActivityManager {
             duration: state.duration
         )
 
-        Task {
+        Task { @MainActor in
             if let activity = currentActivity,
                activity.attributes.playlistID == state.playlistID {
                 await activity.update(using: contentState)
             } else {
                 if let activity = currentActivity {
                     await activity.end(dismissalPolicy: .immediate)
+                    currentActivity = nil
                 }
                 do {
                     currentActivity = try Activity.request(
@@ -80,7 +81,12 @@ final class FuyaoLiveActivityManager {
                         pushType: nil
                     )
                 } catch {
-                    print("⚠️ Live Activity 创建失败: \(error.localizedDescription)")
+                    // 非前台时系统拒绝创建；主 App/扩展均不能使用 UIApplication.shared 判断，靠错误字符串静默略过
+                    let msg = error.localizedDescription
+                    if msg.range(of: "foreground", options: .caseInsensitive) != nil
+                        || msg.range(of: "非前台", options: .caseInsensitive) != nil
+                    { return }
+                    print("⚠️ Live Activity 创建失败: \(msg)")
                 }
             }
         }

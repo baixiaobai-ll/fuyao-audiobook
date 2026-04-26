@@ -129,25 +129,21 @@ public class AudioBookGenerator {
         model: String,
         baseURL: String?
     ) -> AIAnalysisService {
-        let primary: AIAnalysisService
         switch provider {
         case .kimi:
-            primary = KimiAnalysisService(
-                apiKey: apiKey,
-                model: model,
-                baseURL: baseURL ?? "https://api.moonshot.cn/v1"
+            return KimiThenQwenFallbackAnalysisService(
+                kimiApiKey: apiKey,
+                kimiModel: model,
+                kimiBaseURL: baseURL ?? "https://api.moonshot.cn/v1",
+                qwenApiKey: Config.qwenApiKeyForKimiTimeoutFallback
             )
         case .qwen:
-            primary = QwenAnalysisService(
+            return QwenAnalysisService(
                 apiKey: apiKey,
                 model: model,
-                baseURL: baseURL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                baseURL: baseURL ?? Config.qwenDashScopeCompatibleBaseURL
             )
-        case .local:
-            return LocalRuleAnalysisService()
         }
-
-        return ResilientAnalysisService(primary: primary)
     }
 
     // MARK: - Public Methods
@@ -187,6 +183,9 @@ public class AudioBookGenerator {
 
         print("✅ 文本分析完成: \(analysisResult.segments.count) 个片段, \(analysisResult.characters.count) 个角色")
 
+        // 1.5 speaker=nil 的 dialogue 段做短距离继承，避免突然退化到旁白音色。
+        let playbackSegments = Self.inferSpeakerFallback(segments: analysisResult.segments)
+
         // 2. 为角色分配音色
         progressHandler?(GenerationProgress(stage: .assigningVoices, progress: 0.1, message: "正在分配角色音色..."))
         let (voiceAssignments, newBindings) = prepareVoiceAssignments(
@@ -200,7 +199,7 @@ public class AudioBookGenerator {
         print("✅ 音色分配完成")
 
         // 3. 生成语音并混合音频（多段并发 TTS，由 TTSEngine 信号量与 `maxConcurrentTasks` 共同限流；边播边生成时仍按段序回调）
-        let totalSegments = analysisResult.segments.count
+        let totalSegments = playbackSegments.count
         if totalSegments == 0 {
             progressHandler?(GenerationProgress(stage: .completed, progress: 1.0, message: "无分段可合成"))
             return Playlist(title: analysisResult.metadata.title, items: [])
@@ -215,7 +214,7 @@ public class AudioBookGenerator {
             var nextScheduled = 0
 
             func schedule(_ i: Int) {
-                let segment = analysisResult.segments[i]
+                let segment = playbackSegments[i]
                 group.addTask {
                     let item = try await self.buildPlaybackItem(
                         segmentIndex: i,
@@ -281,6 +280,8 @@ public class AudioBookGenerator {
         )
         guard !analysisResult.segments.isEmpty else { return }
 
+        let playbackSegments = Self.inferSpeakerFallback(segments: analysisResult.segments)
+
         let (voiceAssignments, newBindings) = prepareVoiceAssignments(
             for: analysisResult,
             existingVoiceBindings: existingVoiceBindings
@@ -289,10 +290,10 @@ public class AudioBookGenerator {
             onVoiceBindingsUpdated?(newBindings)
         }
 
-        let preloadCount = min(max(1, prefetchSegmentCount), analysisResult.segments.count)
+        let preloadCount = min(max(1, prefetchSegmentCount), playbackSegments.count)
         try await withThrowingTaskGroup(of: Void.self) { group in
             for index in 0..<preloadCount {
-                let segment = analysisResult.segments[index]
+                let segment = playbackSegments[index]
                 group.addTask {
                     _ = try await self.buildPlaybackItem(
                         segmentIndex: index,
@@ -354,11 +355,23 @@ public class AudioBookGenerator {
     private func buildPlaybackItem(
         segmentIndex: Int,
         segment: TextSegment,
-        voiceAssignments: [Character: Voice]
+        voiceAssignments: [String: Voice]
     ) async throws -> PlaybackItem {
         let voice: Voice
-        if segment.type == .dialogue, let speaker = segment.speaker {
-            voice = voiceAssignments[speaker] ?? voiceManager.getNarrationVoice()
+        if segment.type == .dialogue {
+            if let speaker = segment.speaker {
+                // 用 canonicalKey 查表，避免 Character.id（UUID）跨 chunk 不一致导致的找不到。
+                let canonical = RoleIdentity.canonicalKey(forRawName: speaker.name)
+                let key = canonical.isEmpty ? speaker.name.lowercased() : canonical
+                // 找不到分配（极少数：Kimi 给了一个连 voice 表都没的代号 → 退化到"未命名对话"槽
+                // 而不是旁白音色，避免对话听感被当成旁白朗读）
+                voice = voiceAssignments[key] ?? voiceManager.getUnknownDialogueVoice()
+            } else {
+                // type=dialogue 但 speaker=nil：Kimi 拿不准是谁说的（路人 / 群众 / "一道声音"）。
+                // 这里**不能**走旁白音色——旁白音色是给 narration / description / thought 用的，
+                // 把"对话"当成"旁白"读会让用户听感上以为旁白在乱跳。
+                voice = voiceManager.getUnknownDialogueVoice()
+            }
         } else {
             voice = voiceManager.getNarrationVoice()
         }
@@ -423,12 +436,63 @@ public class AudioBookGenerator {
     private func prepareVoiceAssignments(
         for analysisResult: AnalysisResult,
         existingVoiceBindings: [String: String]
-    ) -> ([Character: Voice], [String: String]) {
+    ) -> ([String: Voice], [String: String]) {
         voiceManager.loadAvailableVoices(for: ttsProvider)
         return voiceManager.smartAssignVoices(
             for: analysisResult.characters,
             existingBindings: existingVoiceBindings
         )
+    }
+
+    /// 对 `speaker == nil` 的 dialogue 段做保守的短距离继承：
+    ///
+    /// - 仅向前回溯最多 2 段；
+    /// - 上一段是同场景的 dialogue 且 speaker 已知 → 继承；
+    /// - 上一段是 narration / description（"XX 笑着说道："这种引导语），且**再前一段**是同场景
+    ///   dialogue 且 speaker 已知 → 继承；
+    /// - 其它情况保持 nil，由 `buildPlaybackItem` 走旁白兜底。
+    ///
+    /// 这样能避免 Kimi 偶发把连续同人对话的中间段标成 `speaker=null` 时整段突然退化成旁白音色。
+    static func inferSpeakerFallback(segments: [TextSegment]) -> [TextSegment] {
+        guard segments.count > 1 else { return segments }
+        var result = segments
+        for i in 1..<result.count {
+            guard result[i].type == .dialogue, result[i].speaker == nil else { continue }
+            let currentSceneType = result[i].scene.type
+
+            var inherited: Character?
+
+            // case 1: 紧邻上一段是同场景的有人对话
+            let prev = result[i - 1]
+            if prev.type == .dialogue,
+               let speaker = prev.speaker,
+               prev.scene.type == currentSceneType {
+                inherited = speaker
+            } else if (prev.type == .narration || prev.type == .description),
+                      i >= 2 {
+                // case 2: 上一段是引导语（旁白/描述），再上一段是同场景的有人对话
+                let prev2 = result[i - 2]
+                if prev2.type == .dialogue,
+                   let speaker = prev2.speaker,
+                   prev2.scene.type == currentSceneType,
+                   prev.scene.type == currentSceneType {
+                    inherited = speaker
+                }
+            }
+
+            guard let speaker = inherited else { continue }
+            let s = result[i]
+            result[i] = TextSegment(
+                id: s.id,
+                text: s.text,
+                type: s.type,
+                speaker: speaker,
+                emotion: s.emotion,
+                scene: s.scene,
+                order: s.order
+            )
+        }
+        return result
     }
 
     private static func mergeClientMetadata(into cached: AnalysisResult, metadata: NovelMetadata?) -> AnalysisResult {
@@ -504,7 +568,6 @@ struct GeneratorConfig {
 public enum AIProvider: String, Codable, Sendable {
     case kimi
     case qwen
-    case local
 }
 
 // MARK: - 生成进度

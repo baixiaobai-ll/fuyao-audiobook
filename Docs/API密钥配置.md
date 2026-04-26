@@ -3,42 +3,53 @@
 ## 概述
 
 本项目需要两类 API 密钥：
+
 1. **AI 分析服务** - 用于文本分析（识别角色、情感、场景）
 2. **TTS 服务** - 用于语音合成
 
 ## 1. AI 分析服务
 
-### 通义千问（当前唯一支持）
+### Moonshot Kimi K2.6（默认）
 
 **获取方式：**
-1. 访问阿里云 DashScope / 通义千问控制台
-2. 开通模型服务
-3. 创建 API Key
+
+1. 访问 [https://platform.moonshot.cn/](https://platform.moonshot.cn/)
+2. 创建 API Key（推荐用 `KIMI_API_KEY` / `MOONSHOT_API_KEY` 命名；也可写到通用 `AI_API_KEY`）
+3. 在 `Config.plist` 里设置 `AI_PROVIDER=kimi`
 
 **配置示例：**
+
 ```swift
 let generator = AudioBookGenerator(
-    aiApiKey: "your-qwen-api-key",
+    aiApiKey: "your-kimi-api-key",
     ttsApiKey: "your-tts-key",
-    ttsProvider: .azure
+    ttsProvider: .xfyun
 )
 ```
 
+### 通义千问（备选）
+
+K2.6 不可用时可临时切换：将 `AI_PROVIDER=qwen`，`AI_API_KEY` 填阿里 DashScope 的 key。
+
 说明：
-- 当前项目文本分析链路固定为 `Qwen`
-- 不再保留 `Claude / OpenAI` 文本分析 provider 切换入口
+
+- 默认链路：`AI_PROVIDER=kimi`，使用 `kimi-k2.6` 模型，端点 `https://api.moonshot.cn/v1`
+- 备选链路：`AI_PROVIDER=qwen`，使用 `qwen-plus`，端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- 已彻底移除本地规则降级路径，远端调用失败时直接走"全文旁白"模式
 
 ## 2. TTS 服务
 
 ### Azure Cognitive Services（推荐）
 
 **获取方式：**
+
 1. 访问 [Azure Portal](https://portal.azure.com/)
 2. 创建 "语音服务" 资源
 3. 选择区域（推荐：East Asia 或 Southeast Asia）
 4. 获取密钥和区域信息
 
 **配置示例：**
+
 ```swift
 let ttsConfig = TTSConfig(
     provider: .azure,
@@ -48,14 +59,17 @@ let ttsConfig = TTSConfig(
 ```
 
 **定价：**
+
 - 神经语音: ¥110/百万字符
 - 免费额度: 每月 50 万字符
 
 **预估成本：**
+
 - 1 万字小说: 约 ¥1.1
 - 10 万字小说: 约 ¥11
 
 **支持的中文音色：**
+
 - 晓晓 (XiaoxiaoNeural) - 女性、温柔
 - 云希 (YunxiNeural) - 男性、沉稳
 - 晓伊 (XiaoyiNeural) - 女性、甜美
@@ -65,9 +79,11 @@ let ttsConfig = TTSConfig(
 ### OpenAI TTS（备选）
 
 **获取方式：**
+
 - 使用 OpenAI API Key（与 AI 分析服务相同）
 
 **配置示例：**
+
 ```swift
 let ttsConfig = TTSConfig(
     provider: .openai,
@@ -76,23 +92,28 @@ let ttsConfig = TTSConfig(
 ```
 
 **定价：**
+
 - TTS HD: $15/百万字符
 - TTS Standard: $7.5/百万字符
 
 **预估成本：**
+
 - 1 万字小说: 约 $0.15 (HD) 或 $0.075 (Standard)
 
 **支持的音色：**
+
 - alloy, echo, fable, onyx, nova, shimmer
 
 ### 阿里云智能语音（国内推荐）
 
 **获取方式：**
+
 1. 访问 [阿里云控制台](https://www.aliyun.com/)
 2. 开通 "智能语音交互" 服务
 3. 创建项目并获取 AppKey
 
 **定价：**
+
 - 按调用次数计费
 - 有免费额度
 
@@ -101,6 +122,7 @@ let ttsConfig = TTSConfig(
 ### 科大讯飞（国内备选）
 
 **获取方式：**
+
 1. 访问 [讯飞开放平台](https://www.xfyun.cn/)
 2. 注册并创建应用
 3. 获取 APPID、APIKey、APISecret
@@ -119,13 +141,13 @@ let ttsConfig = TTSConfig(
 <plist version="1.0">
 <dict>
     <key>AI_API_KEY</key>
-    <string>your-qwen-api-key</string>
+    <string>your-kimi-api-key</string>
     <key>TTS_API_KEY</key>
-    <string>your-azure-tts-key</string>
+    <string>your-xfyun-key</string>
     <key>AI_PROVIDER</key>
-    <string>qwen</string>
+    <string>kimi</string>
     <key>TTS_PROVIDER</key>
-    <string>azure</string>
+    <string>xfyun</string>
     <key>AZURE_REGION</key>
     <string>eastasia</string>
 </dict>
@@ -164,11 +186,12 @@ let generator = AudioBookGenerator(
 ### 设置环境变量
 
 在 Xcode Scheme 中设置：
+
 1. Product → Scheme → Edit Scheme
 2. Run → Arguments → Environment Variables
 3. 添加：
-   - `AI_API_KEY`: your-api-key
-   - `TTS_API_KEY`: your-tts-key
+  - `AI_API_KEY`: your-api-key
+  - `TTS_API_KEY`: your-tts-key
 
 ### 读取环境变量
 

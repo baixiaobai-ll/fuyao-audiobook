@@ -85,8 +85,8 @@ class UsageExample {
     /// 示例 3: 自定义配置
     func example3_CustomConfiguration() async throws {
         // 创建自定义 AI 服务
-        let aiService = QwenAnalysisService(
-            apiKey: "your-qwen-api-key"
+        let aiService = KimiAnalysisService(
+            apiKey: "your-kimi-api-key"
         )
 
         let textAnalyzer = NovelTextAnalyzer(aiService: aiService)
@@ -312,9 +312,9 @@ func quickStart() async throws {
 
     // 1. 创建生成器（需要替换为真实的 API Key）
     let generator = AudioBookGenerator(
-        aiApiKey: "your-qwen-api-key",
-        ttsApiKey: "your-azure-tts-key",
-        ttsProvider: .azure
+        aiApiKey: "your-kimi-api-key",
+        ttsApiKey: "your-xfyun-key",
+        ttsProvider: .xfyun
     )
 
     // 2. 准备小说文本

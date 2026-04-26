@@ -55,6 +55,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         setupNotifications()
         setupRemoteCommandCenter()
         restorePersistedPlaybackState()
+        applyListLoopAsDefaultIfNeeded()
     }
 
     deinit {
@@ -376,6 +377,21 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     /// 设置音频会话
     private func setupAudioSession() {
         #if os(iOS) || os(tvOS) || os(watchOS)
+        if Thread.isMainThread {
+            performAudioSessionConfiguration()
+        } else {
+            DispatchQueue.main.sync { [self] in
+                self.performAudioSessionConfiguration()
+            }
+        }
+        #else
+        print("🔊 当前平台跳过 AVAudioSession 配置")
+        #endif
+    }
+
+    /// 必须在主线程调用；`setCategory`/`setActive` 在非主线程会触发 `paramErr`（OSStatus -50）与 SessionCore 报错。
+    private func performAudioSessionConfiguration() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let audioSession = AVAudioSession.sharedInstance()
             let options = makeAudioSessionOptions()
@@ -389,8 +405,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         } catch {
             print("⚠️ 音频会话配置失败: \(error.localizedDescription)")
         }
-        #else
-        print("🔊 当前平台跳过 AVAudioSession 配置")
         #endif
     }
 
@@ -443,6 +457,18 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     private func ensureAudioSessionActive() {
         #if os(iOS) || os(tvOS) || os(watchOS)
+        if Thread.isMainThread {
+            performEnsureAudioSessionActive()
+        } else {
+            DispatchQueue.main.sync { [self] in
+                self.performEnsureAudioSessionActive()
+            }
+        }
+        #endif
+    }
+
+    private func performEnsureAudioSessionActive() {
+        #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let audioSession = AVAudioSession.sharedInstance()
             let options = makeAudioSessionOptions()
@@ -456,7 +482,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     #if os(iOS) || os(tvOS) || os(watchOS)
     private func makeAudioSessionOptions() -> AVAudioSession.CategoryOptions {
-        var options: AVAudioSession.CategoryOptions = [.allowAirPlay, .allowBluetooth]
+        var options: AVAudioSession.CategoryOptions = [.allowAirPlay]
         #if os(iOS) || os(tvOS)
         options.insert(.allowBluetoothA2DP)
         #endif
@@ -1100,6 +1126,17 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             try data.write(to: persistedPlaybackSnapshotURL(), options: .atomic)
         } catch {
             print("⚠️ 保存播放快照失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 升级后首次启动：若快照中循环仍为旧默认「不循环」，自动改为「列表循环」并写回（仅一次）；曾手动选「不循环」的用户可在播放页再切回。
+    private func applyListLoopAsDefaultIfNeeded() {
+        let k = "playbackRepeatModeDefaultMigratedListLoopV1"
+        guard !UserDefaults.standard.bool(forKey: k) else { return }
+        UserDefaults.standard.set(true, forKey: k)
+        if config.repeatMode == .none {
+            config.repeatMode = .all
+            if currentPlaylist != nil { persistPlaybackState() }
         }
     }
 

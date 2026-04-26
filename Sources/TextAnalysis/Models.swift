@@ -86,6 +86,36 @@ public enum SceneType: String, Codable, Sendable {
     }
 }
 
+// MARK: - 叙事位阶 & 音色人设标签（Kimi → 客户端）
+
+public enum NarrativeRole: String, Codable, Sendable, Hashable {
+    /// 作品视点主角 / 第一男主或第一女主
+    case primary
+    /// 重要配角
+    case secondary
+    /// 龙套、路人
+    case tertiary
+}
+
+/// Kimi 在 `characters[].voiceArchetype` 中返回的**软标签**：描述「该角色适合哪种听感人设」，
+/// **不是**讯飞 `vcn` ID。与 `narrativeRole` 一起决定客户端打分；`NarrativeRole.primary` + 成年男声 → 强绑定「聆飞逸」位。
+public enum VoiceArchetypeTag: String, Codable, Sendable, Hashable {
+    /// 老年男性：长辈、老者、掌门、族长等
+    case elderMale = "elder_male"
+    /// 老年女性：老妇、婆婆、嬷嬷等
+    case elderFemale = "elder_female"
+    /// 男童、小厮、店小二、年轻男配、音色偏轻的男角
+    case boyOrYoungMale = "boy_young_male"
+    /// 女童、少女、年轻女配
+    case girlOrYoungFemale = "girl_young_female"
+    /// 成年男性主角、将军、沉稳男配、反派男等
+    case adultMale = "adult_male"
+    /// 成年女主、温柔女性、贵妇、师姐等
+    case adultFemale = "adult_female"
+    /// 性别 / 年龄信息不足，或龙套 NPC，用中性叙述向兜底
+    case neutral = "neutral"
+}
+
 // MARK: - 角色
 
 /// 角色信息
@@ -93,13 +123,27 @@ public struct Character: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public let name: String
     public let gender: Gender
+    /// Kimi 给出的音色人设标签；`nil` 时客户端完全按 `gender` + 本地启发式推断（与旧版兼容）。
+    public var voiceArchetype: VoiceArchetypeTag?
+    /// 叙事位阶：区分男主与男配，避免男配先占「聆飞逸」。
+    public var narrativeRole: NarrativeRole?
     public var voiceId: String?
     public var description: String?
 
-    public init(id: UUID = UUID(), name: String, gender: Gender, voiceId: String? = nil, description: String? = nil) {
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        gender: Gender,
+        voiceArchetype: VoiceArchetypeTag? = nil,
+        narrativeRole: NarrativeRole? = nil,
+        voiceId: String? = nil,
+        description: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.gender = gender
+        self.voiceArchetype = voiceArchetype
+        self.narrativeRole = narrativeRole
         self.voiceId = voiceId
         self.description = description
     }

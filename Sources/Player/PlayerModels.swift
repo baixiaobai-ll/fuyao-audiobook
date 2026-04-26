@@ -240,7 +240,7 @@ public struct PlaybackConfig: Codable {
         volume: Float = 1.0,
         enableBackgroundPlayback: Bool = true,
         enableAutoNext: Bool = true,
-        repeatMode: RepeatMode = .none
+        repeatMode: RepeatMode = .all
     ) {
         self.playbackRate = playbackRate
         self.volume = volume

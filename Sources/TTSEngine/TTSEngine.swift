@@ -497,8 +497,6 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                             return
                         }
                         let code = (json["header"] as? [String: Any])?["code"] as? Int ?? 0
-                        let hasPayload = json["payload"] != nil
-                        print("🔍 超拟人帧: code=\(code), hasPayload=\(hasPayload)")
                         if code != 0 {
                             let errMsg = (json["header"] as? [String: Any])?["message"] as? String ?? "Unknown"
                             NSLog("🚨 讯飞超拟人错误 code=%d message=%@", code, errMsg)
@@ -514,7 +512,6 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
                             accumulated.append(chunk)
                         }
                         let status = (json["payload"] as? [String: Any]).flatMap { ($0["audio"] as? [String: Any])?["status"] as? Int } ?? -1
-                        print("🔍 超拟人状态: status=\(status), accumulated=\(accumulated.count) bytes")
                         if status == 2 {
                             task.cancel()
                             let audioResult = self.buildAudioData(
@@ -769,63 +766,25 @@ final class TTSEngine: TTSEngineProtocol, @unchecked Sendable {
         XfyunSynthesisTuning(speed: 50, pitch: 50, volume: 50, oralLevel: "mid")
     }
 
+    /// 讯飞超拟人音色（`x6_*_pro` / `x5_*_flow`）**没有原生 emotion 入参**——它只接受
+    /// `vcn`（发音人 ID）和 `speed / pitch / volume / oral_level` 这几个 prosody 参数。
+    /// 历史上我们曾用 `segment.emotion / scene / type` 间接驱动 prosody，目的是给"愤怒段"
+    /// 加 pitch、给"悲伤段"减 speed 等，但实际效果是：
+    /// 1. 同一角色在不同情绪下 pitch 偏移 ≥ 8 单位 → 听感**像是换了发音人**；
+    /// 2. `oralLevel` 切档（low/mid/high）对超拟人音色极敏感 → 听感等同于切发音人；
+    /// 3. 跟讯飞超拟人本身**自带的情绪表达能力**打架，反而失控。
+    ///
+    /// 2026-04-26 决策（方案 A，用户拍板）：
+    /// **彻底放弃在 prosody 层模拟 emotion**。所有 segment 都用固定的中位参数合成，让讯飞
+    /// 发音人按它自己的内置表演力去读。氛围感由 `BGM + 音效`（按 scene.type 选）补偿，
+    /// 而不是由 TTS 调制做。emotion / scene / type 字段在数据层照常保留，未来切到支持
+    /// emotion SSML 的引擎（Azure `<express-as>` / OpenAI `instructions`）时直接复用即可。
+    ///
+    /// **保留 segment 参数签名**（虽然函数体内不读它）：方便未来切引擎时直接重新接回来，
+    /// 不必改调用方。Swift 编译器对未使用的参数无警告（与未使用的局部变量不同）。
     private func makeXfyunTuning(for segment: TextSegment) -> XfyunSynthesisTuning {
-        var speed = Int((segment.emotion.prosodyAdjustment.rate - 1.0) * 34) + 50
-        var pitch = Int((segment.emotion.prosodyAdjustment.pitch - 1.0) * 42) + 50
-        var volume = Int((segment.emotion.prosodyAdjustment.volume - 1.0) * 30) + 50
-
-        let intensityScale = 0.65 + (segment.scene.intensity * 0.9)
-        func applyScene(speed deltaSpeed: Int, pitch deltaPitch: Int, volume deltaVolume: Int) {
-            speed += Int(Double(deltaSpeed) * intensityScale)
-            pitch += Int(Double(deltaPitch) * intensityScale)
-            volume += Int(Double(deltaVolume) * intensityScale)
-        }
-
-        switch segment.scene.type {
-        case .battle:
-            applyScene(speed: 8, pitch: 4, volume: 6)
-        case .tense:
-            applyScene(speed: 4, pitch: 2, volume: 3)
-        case .romantic:
-            applyScene(speed: -4, pitch: 1, volume: 0)
-        case .mysterious:
-            applyScene(speed: -6, pitch: -3, volume: -2)
-        case .sad:
-            applyScene(speed: -8, pitch: -5, volume: -4)
-        case .festive:
-            applyScene(speed: 6, pitch: 3, volume: 5)
-        case .peaceful:
-            break
-        }
-
-        switch segment.type {
-        case .thought:
-            speed -= 5
-            volume -= 8
-        case .description:
-            speed -= 3
-        case .narration:
-            speed -= 1
-        case .dialogue:
-            break
-        }
-
-        let oralLevel: String
-        switch (segment.emotion, segment.scene.type, segment.type) {
-        case (.excited, _, _), (.angry, _, _), (_, .battle, _), (_, .festive, _):
-            oralLevel = "high"
-        case (.sad, _, _), (.tender, _, _), (_, .mysterious, _), (_, _, .thought):
-            oralLevel = "low"
-        default:
-            oralLevel = "mid"
-        }
-
-        return XfyunSynthesisTuning(
-            speed: min(max(speed, 20), 80),
-            pitch: min(max(pitch, 20), 80),
-            volume: min(max(volume, 15), 80),
-            oralLevel: oralLevel
-        )
+        _ = segment
+        return defaultXfyunTuning()
     }
 }
 

@@ -9,7 +9,20 @@ import Foundation
 
 /// AI 分析服务协议
 protocol AIAnalysisService {
+    /// 当前 provider，用于日志 / dump 文件名等场景。
+    var provider: AIProvider { get }
     func analyze(prompt: String) async throws -> String
+}
+
+/// 输出 token 上限字段名。
+///
+/// - `maxTokens`：OpenAI 老规范，阿里 dashscope（Qwen 兼容模式）也只认这个名字。
+/// - `maxCompletionTokens`：OpenAI 新规范（o1/o3 reasoning 模型）+ Moonshot Kimi K2.6 起的强制约定。
+///   Moonshot 已把 `max_tokens` 标 deprecated，**服务端会静默丢弃**该字段并 fallback 到默认 1024 token，
+///   表现就是输出无论怎么发都被切到 ~4400 字符（≈1024 token 中文）。必须发 `max_completion_tokens` 才生效。
+private enum MaxTokensFieldName {
+    case maxTokens
+    case maxCompletionTokens
 }
 
 private struct AIChatServiceConfig {
@@ -19,12 +32,21 @@ private struct AIChatServiceConfig {
     let baseURL: String
     let requestTimeout: TimeInterval
     let maxRetryAttempts: Int
-    let temperature: Double
+    /// `nil` 表示不传该字段（K2.6 等模型对 temperature 有"固定值校验"，传任意值会报错或被静默忽略）。
+    let temperature: Double?
     let maxOutputTokens: Int
+    let maxTokensFieldName: MaxTokensFieldName
+    /// 额外注入到请求 body 的字段。Kimi K2.6 默认走 thinking 模式，这里用来注入
+    /// `thinking: { type: "disabled" }` 关掉推理过程，结构化 JSON 输出无需 reasoning。
+    let extraBody: [String: Any]
 }
 
 /// OpenAI 兼容的聊天补全分析服务。
-private final class OpenAICompatibleAnalysisService: AIAnalysisService {
+///
+/// 是 KimiAnalysisService / QwenAnalysisService 的内部实现细节，仅暴露 `analyze` 方法供包装类透传。
+/// 不需要 conform 外部协议 `AIAnalysisService`：provider 标识由各个具体的包装类自己声明，
+/// 避免在通用 HTTP 客户端里硬编码具体厂商。
+private final class OpenAICompatibleAnalysisService {
     private let config: AIChatServiceConfig
 
     init(config: AIChatServiceConfig) {
@@ -33,22 +55,33 @@ private final class OpenAICompatibleAnalysisService: AIAnalysisService {
 
     func analyze(prompt: String) async throws -> String {
         let url = URL(string: "\(config.baseURL)/chat/completions")!
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": config.model,
             "messages": [
                 [
                     "role": "system",
-                    "content": "你是一个专业的小说文本分析助手，擅长识别对话、角色、情感和场景。请只返回合法 JSON，不要附加解释。"
+                    // 须含不区分大小写的 `json` 字样，通义在 `response_format: json_object` 时否则会报错；见百炼《错误信息》相关条目。
+                    "content": "你是一个专业的小说文本分析助手，擅长识别对话、角色、情感和场景。请只返回 **合法 json 对象**（一个 JSON 对象即可），不要附加解释或 Markdown 代码围栏。"
                 ],
                 ["role": "user", "content": prompt]
             ],
-            "temperature": config.temperature,
-            "max_tokens": config.maxOutputTokens,
             "response_format": [
                 "type": "json_object"
             ],
             "stream": false
         ]
+        if let temperature = config.temperature {
+            body["temperature"] = temperature
+        }
+        switch config.maxTokensFieldName {
+        case .maxTokens:
+            body["max_tokens"] = config.maxOutputTokens
+        case .maxCompletionTokens:
+            body["max_completion_tokens"] = config.maxOutputTokens
+        }
+        for (k, v) in config.extraBody {
+            body[k] = v
+        }
         let bodyData = try JSONSerialization.data(withJSONObject: body)
 
         var lastError: Error = AnalysisError.networkError
@@ -72,9 +105,17 @@ private final class OpenAICompatibleAnalysisService: AIAnalysisService {
 
                 if httpResponse.statusCode == 200 {
                     let result = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
-                    guard let content = result.choices.first?.message.contentText,
+                    guard let firstChoice = result.choices.first,
+                          let content = firstChoice.message.contentText,
                           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         throw AnalysisError.invalidResponse
+                    }
+                    let finishReason = firstChoice.finish_reason ?? "unknown"
+                    if finishReason != "stop" {
+                        let prompt = result.usage?.prompt_tokens.map(String.init) ?? "?"
+                        let completion = result.usage?.completion_tokens.map(String.init) ?? "?"
+                        let total = result.usage?.total_tokens.map(String.init) ?? "?"
+                        print("⚠️ \(config.providerName) finish_reason=\(finishReason) （非 stop，输出可能被截断），usage prompt=\(prompt) completion=\(completion) total=\(total)")
                     }
                     return content
                 }
@@ -86,6 +127,8 @@ private final class OpenAICompatibleAnalysisService: AIAnalysisService {
                     lastError = AnalysisError.apiError("\(config.providerName) 请求过于频繁，请稍后重试")
                 } else {
                     let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                    let head = String(errorMessage.prefix(800))
+                    print("⚠️ \(config.providerName) HTTP \(httpResponse.statusCode) 响应: \(head)")
                     lastError = AnalysisError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
                 }
 
@@ -134,13 +177,27 @@ private final class OpenAICompatibleAnalysisService: AIAnalysisService {
 }
 
 /// Kimi 分析服务。
+///
+/// 默认使用 `kimi-k2.6`（K2 系列原 `kimi-k2-turbo-preview` 等将于 2026-05-25 下线，
+/// K2.6 是官方指定继任，国内端点 `api.moonshot.cn` 已于 2026-04-21 上线）。
+///
+/// 三个关键字段必须按 K2.6 规范来，否则服务端会**静默降级**而不是报错：
+/// 1. `max_completion_tokens`（不是已废弃的 `max_tokens`）：服务端丢弃 `max_tokens` 后会回退到默认
+///    1024 token，输出会稳定截断在 ~4400 字符。这里给 32768 已远超 30000 字符 chunk 对应 JSON 体积。
+/// 2. 不传 `temperature`：K2.6 强制 thinking 模式 temperature=1.0、non-thinking 模式 temperature=0.6，
+///    传任何值都会"非默认值即报错"，让服务端按模式自选默认即可。
+/// 3. `thinking: { type: "disabled" }`：关掉推理过程，结构化 JSON 输出不需要 reasoning，
+///    省时延、省钱（reasoning token 计费同 output token），还避免 reasoning 挤占 max_completion_tokens。
 final class KimiAnalysisService: AIAnalysisService {
     private let service: OpenAICompatibleAnalysisService
+    let provider: AIProvider = .kimi
 
+    /// - Parameter maxHTTPAttempts: 同一请求在**连接/读超时**等可重试错误下的最大尝试次数；用于与「超时后改走通义」组合时设为 `1`，避免再白等两轮 Kimi。
     init(
         apiKey: String,
-        model: String = "kimi-k2-turbo-preview",
-        baseURL: String = "https://api.moonshot.cn/v1"
+        model: String = "kimi-k2.6",
+        baseURL: String = "https://api.moonshot.cn/v1",
+        maxHTTPAttempts: Int = 3
     ) {
         service = OpenAICompatibleAnalysisService(config: AIChatServiceConfig(
             providerName: "Kimi",
@@ -148,9 +205,13 @@ final class KimiAnalysisService: AIAnalysisService {
             model: model,
             baseURL: baseURL,
             requestTimeout: 120,
-            maxRetryAttempts: 3,
-            temperature: 0.2,
-            maxOutputTokens: 20000
+            maxRetryAttempts: max(1, maxHTTPAttempts),
+            temperature: nil,
+            maxOutputTokens: 32768,
+            maxTokensFieldName: .maxCompletionTokens,
+            extraBody: [
+                "thinking": ["type": "disabled"]
+            ]
         ))
     }
 
@@ -159,24 +220,89 @@ final class KimiAnalysisService: AIAnalysisService {
     }
 }
 
+/// Kimi 优先；**仅当** Kimi 出现 120s 超时时立即改调通义 `qwen3.6-plus`，不再对 Kimi 做第 2、3 次重试。
+final class KimiThenQwenFallbackAnalysisService: AIAnalysisService {
+    let provider: AIProvider = .kimi
+    private let kimi: KimiAnalysisService
+    private let qwen: QwenAnalysisService?
+
+    init(
+        kimiApiKey: String,
+        kimiModel: String,
+        kimiBaseURL: String,
+        qwenApiKey: String?
+    ) {
+        self.kimi = KimiAnalysisService(
+            apiKey: kimiApiKey,
+            model: kimiModel,
+            baseURL: kimiBaseURL,
+            maxHTTPAttempts: 1
+        )
+        if let key = qwenApiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            self.qwen = QwenAnalysisService(
+                apiKey: key,
+                model: "qwen3.6-plus",
+                baseURL: Config.qwenDashScopeCompatibleBaseURL,
+                requestTimeout: 120,
+                maxHTTPAttempts: 2,
+                maxOutputTokens: 16_384
+            )
+        } else {
+            self.qwen = nil
+        }
+    }
+
+    func analyze(prompt: String) async throws -> String {
+        do {
+            return try await kimi.analyze(prompt: prompt)
+        } catch let error as AnalysisError {
+            if case .requestTimedOut = error {
+                print("⏱️ Kimi 分析 120s 超时，已跳过剩余 Kimi 重试，改调通义千问 qwen3.6-plus …")
+                guard let qwen else {
+                    throw AnalysisError.apiError(
+                        "Kimi 分析超时，且未配置通义千问 API Key。请在环境变量、Keychain 或 Config.plist 中设置 QWEN_API_KEY 或 DASHSCOPE_API_KEY 以自动降级。"
+                    )
+                }
+                let out = try await qwen.analyze(prompt: prompt)
+                print("✅ 通义千问 qwen3.6-plus 已接替完成本段分析（Kimi 120s 超时后降级）")
+                return out
+            }
+            throw error
+        }
+    }
+}
+
 /// 通义千问分析服务。
+///
+/// 阿里 dashscope 兼容模式严格按 OpenAI 老规范，**只认 `max_tokens`，不识别 `max_completion_tokens`**，
+/// 字段名不能跟 Kimi 共用。默认模型 `qwen3.6-plus`（与百炼开放模型名一致）；小说结构化 JSON 需足够 `max_tokens` 以免截断。
 final class QwenAnalysisService: AIAnalysisService {
     private let service: OpenAICompatibleAnalysisService
+    let provider: AIProvider = .qwen
 
     init(
         apiKey: String,
-        model: String = "qwen-plus",
-        baseURL: String = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        model: String = "qwen3.6-plus",
+        baseURL: String = Config.qwenDashScopeCompatibleBaseURL,
+        requestTimeout: TimeInterval = 120,
+        maxHTTPAttempts: Int = 3,
+        maxOutputTokens: Int = 16_384,
+        temperature: Double = 0.3
     ) {
         service = OpenAICompatibleAnalysisService(config: AIChatServiceConfig(
             providerName: "通义千问",
             apiKey: apiKey,
             model: model,
             baseURL: baseURL,
-            requestTimeout: 90,
-            maxRetryAttempts: 3,
-            temperature: 0.3,
-            maxOutputTokens: 1600
+            requestTimeout: requestTimeout,
+            maxRetryAttempts: max(1, maxHTTPAttempts),
+            temperature: temperature,
+            maxOutputTokens: maxOutputTokens,
+            maxTokensFieldName: .maxTokens,
+            // 百炼：Qwen3.6 等默认开启「思考模式」时，与 `response_format: json_object` 不兼容，会报 Json mode 相关错误，须显式关闭。
+            extraBody: [
+                "enable_thinking": false
+            ]
         ))
     }
 
@@ -185,32 +311,21 @@ final class QwenAnalysisService: AIAnalysisService {
     }
 }
 
-/// 远端分析失败时的本地降级，避免整条播放链路被分析阶段完全阻塞。
-final class ResilientAnalysisService: AIAnalysisService {
-    private let primary: AIAnalysisService
-    private let fallback: AIAnalysisService
-
-    init(primary: AIAnalysisService, fallback: AIAnalysisService = LocalRuleAnalysisService()) {
-        self.primary = primary
-        self.fallback = fallback
-    }
-
-    func analyze(prompt: String) async throws -> String {
-        do {
-            return try await primary.analyze(prompt: prompt)
-        } catch let error as AnalysisError {
-            guard error.allowsLocalFallback else { throw error }
-            print("⚠️ 远端文本分析失败，回退到本地规则分析：\(error.localizedDescription)")
-            return try await fallback.analyze(prompt: prompt)
-        }
-    }
-}
-
 private struct ChatCompletionResponse: Decodable {
     let choices: [Choice]
+    let usage: Usage?
 
     struct Choice: Decodable {
         let message: Message
+        /// `stop`：自然结束；`length`：达到 max_tokens / max_completion_tokens 被截断；
+        /// 其他可能值如 `content_filter` 等。Moonshot 文档：`length` 时多余 token 会被丢弃。
+        let finish_reason: String?
+    }
+
+    struct Usage: Decodable {
+        let prompt_tokens: Int?
+        let completion_tokens: Int?
+        let total_tokens: Int?
     }
 
     struct Message: Decodable {
@@ -255,234 +370,5 @@ private struct ChatCompletionResponse: Decodable {
     struct ContentPart: Decodable {
         let type: String?
         let text: String?
-    }
-}
-
-/// 本地规则分析服务（降级方案）
-class LocalRuleAnalysisService: AIAnalysisService {
-
-    func analyze(prompt: String) async throws -> String {
-        // 从 prompt 中提取文本内容
-        guard let textRange = prompt.range(of: "文本内容：\n") else {
-            throw AnalysisError.invalidResponse
-        }
-
-        let text = String(prompt[textRange.upperBound...])
-
-        // 简单的规则分析
-        let segments = analyzeWithRules(text)
-        let characters = extractCharacters(from: segments)
-
-        let response: [String: Any] = [
-            "segments": segments.map { segment in
-                [
-                    "text": segment.text,
-                    "type": segment.type,
-                    "speaker": segment.speaker ?? "",
-                    "emotion": segment.emotion,
-                    "sceneType": segment.sceneType,
-                    "sceneIntensity": segment.sceneIntensity
-                ]
-            },
-            "characters": characters.map { char in
-                [
-                    "name": char.name,
-                    "gender": char.gender
-                ]
-            }
-        ]
-
-        let jsonData = try JSONSerialization.data(withJSONObject: response, options: .prettyPrinted)
-        return String(data: jsonData, encoding: .utf8) ?? "{}"
-    }
-
-    private func analyzeWithRules(_ text: String) -> [SimpleSegment] {
-        var segments: [SimpleSegment] = []
-        let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            segments.append(contentsOf: analyzeLineWithRules(trimmed))
-        }
-
-        return segments
-    }
-
-    private func analyzeLineWithRules(_ text: String) -> [SimpleSegment] {
-        let quotedRanges = extractQuotedRanges(from: text)
-        guard !quotedRanges.isEmpty else {
-            return [makeNarrationSegment(from: text)]
-        }
-
-        var segments: [SimpleSegment] = []
-        let speaker = extractSpeaker(from: text)
-        var cursor = text.startIndex
-
-        for quoted in quotedRanges {
-            let prefix = String(text[cursor..<quoted.fullRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !prefix.isEmpty {
-                segments.append(makeNarrationSegment(from: prefix))
-            }
-
-            let dialogueText = String(text[quoted.contentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !dialogueText.isEmpty {
-                segments.append(SimpleSegment(
-                    text: dialogueText,
-                    type: "dialogue",
-                    speaker: speaker,
-                    emotion: detectEmotion(from: dialogueText),
-                    sceneType: detectScene(from: dialogueText),
-                    sceneIntensity: 0.5
-                ))
-            }
-
-            cursor = quoted.fullRange.upperBound
-        }
-
-        let suffix = String(text[cursor...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !suffix.isEmpty {
-            segments.append(makeNarrationSegment(from: suffix))
-        }
-
-        return segments.isEmpty ? [makeNarrationSegment(from: text)] : segments
-    }
-
-    private func extractSpeaker(from text: String) -> String? {
-        let patterns = [
-            "^\\s*([^：:，,。！？“\"'「『]{1,12}?)(?:轻声|低声|沉声|笑着|淡淡地|冷冷地|认真地|无奈地|开口|回应|提醒|解释|说道|说|问道|问|答道|答|喊道|喊|叫道|叫|回道|应道|道)[：:，, ]*",
-            "^\\s*([^：:]{1,12})[：:]"
-        ]
-
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-               let range = Range(match.range(at: 1), in: text) {
-                return String(text[range]).trimmingCharacters(in: .whitespaces)
-            }
-        }
-
-        return nil
-    }
-
-    private func extractQuotedRanges(from text: String) -> [QuotedRange] {
-        let patterns = [
-            "“([^”]+)”",
-            "\"([^\"]+)\"",
-            "「([^」]+)」",
-            "『([^』]+)』",
-            "‘([^’]+)’",
-            "'([^']+)'"
-        ]
-        var ranges: [QuotedRange] = []
-
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-                guard let fullRange = Range(match.range(at: 0), in: text),
-                      let contentRange = Range(match.range(at: 1), in: text) else {
-                    continue
-                }
-                ranges.append(QuotedRange(fullRange: fullRange, contentRange: contentRange))
-            }
-        }
-
-        return ranges.sorted { lhs, rhs in
-            lhs.fullRange.lowerBound < rhs.fullRange.lowerBound
-        }
-    }
-
-    private func makeNarrationSegment(from text: String) -> SimpleSegment {
-        SimpleSegment(
-            text: text,
-            type: "narration",
-            speaker: nil,
-            emotion: "neutral",
-            sceneType: detectScene(from: text),
-            sceneIntensity: 0.5
-        )
-    }
-
-    private func detectEmotion(from text: String) -> String {
-        let emotionKeywords: [String: [String]] = [
-            "happy": ["哈哈", "开心", "高兴", "笑", "喜悦"],
-            "sad": ["哭", "悲伤", "难过", "伤心", "流泪"],
-            "angry": ["愤怒", "生气", "怒", "吼", "骂"],
-            "excited": ["激动", "兴奋", "太好了", "棒"],
-            "fearful": ["害怕", "恐惧", "可怕", "吓"],
-            "surprised": ["惊讶", "震惊", "天啊", "什么"]
-        ]
-
-        for (emotion, keywords) in emotionKeywords {
-            if keywords.contains(where: { text.contains($0) }) {
-                return emotion
-            }
-        }
-
-        return "neutral"
-    }
-
-    private func detectScene(from text: String) -> String {
-        let sceneKeywords: [String: [String]] = [
-            "battle": ["战斗", "打斗", "厮杀", "攻击", "剑"],
-            "tense": ["紧张", "危险", "小心", "警惕"],
-            "romantic": ["爱", "温柔", "亲吻", "拥抱"],
-            "mysterious": ["神秘", "奇怪", "诡异", "阴森"],
-            "sad": ["悲伤", "哀伤", "凄凉"]
-        ]
-
-        for (scene, keywords) in sceneKeywords {
-            if keywords.contains(where: { text.contains($0) }) {
-                return scene
-            }
-        }
-
-        return "peaceful"
-    }
-
-    private func extractCharacters(from segments: [SimpleSegment]) -> [SimpleCharacter] {
-        var characters: [String: SimpleCharacter] = [:]
-
-        for segment in segments {
-            if let speaker = segment.speaker, !speaker.isEmpty, characters[speaker] == nil {
-                let gender = detectGender(from: speaker)
-                characters[speaker] = SimpleCharacter(name: speaker, gender: gender)
-            }
-        }
-
-        return Array(characters.values)
-    }
-
-    private func detectGender(from name: String) -> String {
-        let maleKeywords = ["先生", "公子", "少爷", "大哥", "兄"]
-        let femaleKeywords = ["小姐", "姑娘", "夫人", "妹", "姐"]
-
-        if maleKeywords.contains(where: { name.contains($0) }) {
-            return "male"
-        }
-        if femaleKeywords.contains(where: { name.contains($0) }) {
-            return "female"
-        }
-
-        return "neutral"
-    }
-
-    private struct SimpleSegment {
-        let text: String
-        let type: String
-        let speaker: String?
-        let emotion: String
-        let sceneType: String
-        let sceneIntensity: Double
-    }
-
-    private struct SimpleCharacter {
-        let name: String
-        let gender: String
-    }
-
-    private struct QuotedRange {
-        let fullRange: Range<String.Index>
-        let contentRange: Range<String.Index>
     }
 }

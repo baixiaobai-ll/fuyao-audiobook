@@ -58,13 +58,13 @@ else
 <plist version="1.0">
 <dict>
     <key>AI_API_KEY</key>
-    <string>your-claude-api-key-here</string>
+    <string>your-kimi-api-key-here</string>
     <key>TTS_API_KEY</key>
-    <string>your-azure-tts-key-here</string>
+    <string>your-xfyun-key-here</string>
     <key>AI_PROVIDER</key>
-    <string>claude</string>
+    <string>kimi</string>
     <key>TTS_PROVIDER</key>
-    <string>azure</string>
+    <string>xfyun</string>
     <key>AZURE_REGION</key>
     <string>eastasia</string>
 </dict>

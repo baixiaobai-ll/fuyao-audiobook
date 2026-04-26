@@ -14,10 +14,6 @@ struct Config {
 
     /// AI 分析 API 密钥
     static var aiApiKey: String {
-        if aiProvider == .local {
-            return ""
-        }
-
         let keys = aiProviderConfigKeys(for: aiProvider)
         if let key = loadFirstNonEmptyValue(fromEnvironmentKeys: keys) {
             return key
@@ -69,11 +65,9 @@ struct Config {
 
         switch aiProvider {
         case .kimi:
-            return "kimi-k2-turbo-preview"
+            return "kimi-k2.6"
         case .qwen:
-            return "qwen-plus"
-        case .local:
-            return "local-rules"
+            return "qwen3.6-plus"
         }
     }
 
@@ -90,10 +84,21 @@ struct Config {
         case .kimi:
             return "https://api.moonshot.cn/v1"
         case .qwen:
-            return "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        case .local:
-            return nil
+            return qwenDashScopeCompatibleBaseURL
         }
+    }
+
+    /// 通义千问 OpenAI 兼容接口根路径（不要尾 `/`）。国内默认北京；海外见百炼文档 `dashscope-intl` / `dashscope-us`。
+    static var qwenDashScopeCompatibleBaseURL: String {
+        if let u = ProcessInfo.processInfo.environment["DASHSCOPE_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            return u.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        if let u = loadFromPlist(key: "DASHSCOPE_BASE_URL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            return u.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
     }
 
     /// TTS 服务提供商
@@ -232,6 +237,18 @@ struct Config {
         UserDefaults.standard.bool(forKey: "streamPlaybackWhileGenerating", defaultValue: true)
     }
 
+    /// 流式播放：累计缓冲的片段时长（秒）达到该值，或已缓冲 ≥2 段时，**提前开播**（不再固定等 3 段/20 秒）。
+    static var streamPlaybackStartMinTotalSeconds: TimeInterval {
+        let v = UserDefaults.standard.double(forKey: "streamPlaybackStartMinTotalSeconds", defaultValue: 6)
+        if v > 0, v < 300 { return v }
+        return 6
+    }
+
+    /// 在「本章节全部片段时间线生成完毕」后，是否在后台对**下一章**跑一遍完整合成以预热 TTS 缓存（减轻切章冷启动）。
+    static var prefetchEntireNextChapterWhenCurrentReady: Bool {
+        UserDefaults.standard.bool(forKey: "prefetchEntireNextChapterWhenCurrentReady", defaultValue: true)
+    }
+
     /// 当前章播放到该进度（0～1）时开始预拉「下一章」正文到本地缓存。
     static var chapterPrefetchProgressThreshold: Double {
         let v = UserDefaults.standard.double(forKey: "chapterPrefetchProgressThreshold")
@@ -240,13 +257,22 @@ struct Config {
     }
 
     static var hasConfiguredAIAPIKey: Bool {
-        if aiProvider == .local {
-            return true
-        }
         let keys = aiProviderConfigKeys(for: aiProvider)
         return loadFirstNonEmptyValue(fromEnvironmentKeys: keys) != nil
             || loadFirstNonEmptyValue(fromKeychainKeys: keys) != nil
             || loadFirstNonEmptyValue(fromPlistKeys: keys) != nil
+    }
+
+    /// 当 **Kimi 单次分析请求** 在 120s 内超时后，用通义续跑分析；需百炼/ DashScope 的 key。
+    /// 未配置时仍只用 Kimi（超时后报原有错误，不会静默失败）。
+    static var qwenApiKeyForKimiTimeoutFallback: String? {
+        let envKeys = ["QWEN_API_KEY", "DASHSCOPE_API_KEY"]
+        if let k = loadFirstNonEmptyValue(fromEnvironmentKeys: envKeys) { return k }
+        if let k = loadFirstNonEmptyValue(fromKeychainKeys: envKeys) { return k }
+        for key in envKeys {
+            if let k = loadFromPlist(key: key), !k.isEmpty { return k }
+        }
+        return nil
     }
 
     static var hasConfiguredTTSAPIKey: Bool {
@@ -300,8 +326,6 @@ struct Config {
             return ["KIMI_API_KEY", "MOONSHOT_API_KEY", "AI_API_KEY"]
         case .qwen:
             return ["QWEN_API_KEY", "DASHSCOPE_API_KEY", "AI_API_KEY"]
-        case .local:
-            return ["AI_API_KEY"]
         }
     }
 }
@@ -403,6 +427,14 @@ extension UserDefaults {
         }
         return float(forKey: key)
     }
+
+    /// 获取 Double 值，带默认值
+    func double(forKey key: String, defaultValue: Double) -> Double {
+        if object(forKey: key) == nil {
+            return defaultValue
+        }
+        return double(forKey: key)
+    }
 }
 
 // MARK: - Bundle 扩展
@@ -485,6 +517,10 @@ class ConfigHelper {
         print("   AI 提供商: \(Config.aiProvider)")
         print("   AI 模型: \(Config.aiModel)")
         print("   AI 基础地址: \(Config.aiBaseURL ?? "local")")
+        if Config.aiProvider == .kimi {
+            let fb = Config.qwenApiKeyForKimiTimeoutFallback != nil
+            print("   Kimi 超时后降级通义: \(fb ? "已配置 (QWEN / DASHSCOPE Key)" : "未配置，超时后不会自动切到百炼")")
+        }
         print("   TTS 提供商: \(Config.ttsProvider)")
         print("   Azure 区域: \(Config.azureRegion)")
         print("   背景音乐: \(Config.enableBackgroundMusic)")
@@ -492,6 +528,8 @@ class ConfigHelper {
         print("   缓存: \(Config.enableCache)")
         print("   TTS 最大并发: \(Config.maxConcurrentTasks)（讯飞等接口上限 100，勿超过）")
         print("   边播边生成: \(Config.streamPlaybackWhileGenerating)")
+        print("   流式开场缓冲(秒, ≥2段或总时长达此值即播): \(String(format: "%.1f", Config.streamPlaybackStartMinTotalSeconds))")
+        print("   章末后台预合成下一章: \(Config.prefetchEntireNextChapterWhenCurrentReady)")
         print("   下一章预取进度阈值: \(String(format: "%.0f%%", Config.chapterPrefetchProgressThreshold * 100))（实际会按段数/并发微调）")
     }
 }

@@ -53,3 +53,6 @@ backend/data/
 backend/.pycache/
 backend/.env
 *.sqlite3
+
+# Local device diagnostic dumps
+_dump_inbox/

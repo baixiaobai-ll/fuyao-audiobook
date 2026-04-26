@@ -34,8 +34,43 @@ private actor UpcomingChapterWarmupRegistry {
     }
 }
 
+/// 章末**整章**后台预合成（与 18% 时的轻量 `warmup` 并存；键不同，避免互斥误伤）。
+private actor NextChapterFullPrefetchRegistry {
+    static let shared = NextChapterFullPrefetchRegistry()
+
+    private var inFlightKeys: Set<String> = []
+    private var completedKeys: Set<String> = []
+
+    func shouldStart(key: String) -> Bool {
+        guard !inFlightKeys.contains(key), !completedKeys.contains(key) else {
+            return false
+        }
+        inFlightKeys.insert(key)
+        return true
+    }
+
+    func finish(key: String, completed: Bool) {
+        inFlightKeys.remove(key)
+        if completed {
+            completedKeys.insert(key)
+        }
+    }
+}
+
 @MainActor
 enum BookChapterPlayback {
+    /// 流式生成时，累计多少播放素材（条数/时长）即认为可开播；降低首段等待，具体阈值见 `Config.streamPlaybackStartMinTotalSeconds`。
+    private static func isStreamStartupBufferReady(
+        items: [PlaybackItem],
+        bufferedDuration: TimeInterval,
+        minTotalSeconds: TimeInterval
+    ) -> Bool {
+        if items.count >= 2 { return true }
+        let floor = minTotalSeconds > 0 ? minTotalSeconds : 6
+        if bufferedDuration >= floor { return true }
+        return false
+    }
+
     static func fetchContent(shelfBookId: UUID, book: Book, chapter: Chapter) async throws -> String {
         if let cached = await ChapterContentManager.shared.getContent(
             bookId: shelfBookId, chapterIndex: chapter.index), !cached.isEmpty {
@@ -108,9 +143,9 @@ enum BookChapterPlayback {
             )
 
             let sortedChapters = allChapters.sorted { $0.index < $1.index }
-            let nextChapter = nextChapter(after: chapter.index, in: sortedChapters)
+            let upcomingChapter = Self.nextChapter(after: chapter.index, in: sortedChapters)
             player.configureChapterPlaybackHandlers(
-                prefetch: nextChapter.map { upcoming in
+                prefetch: upcomingChapter.map { upcoming in
                     {
                         await preloadUpcomingChapter(
                             shelfBook: shelfBook,
@@ -119,7 +154,7 @@ enum BookChapterPlayback {
                         )
                     }
                 },
-                advance: nextChapter.map { upcoming in
+                advance: upcomingChapter.map { upcoming in
                     { [weak player] in
                         guard let player else { return }
                         try await BookChapterPlayback.play(
@@ -200,8 +235,11 @@ enum BookChapterPlayback {
                                 startupBuffer.items.append(item)
                                 startupBuffer.items.sort { $0.order < $1.order }
 
-                                let shouldStart = startupBuffer.items.count >= 3
-                                    || startupBuffer.bufferedDuration >= 20
+                                let shouldStart = Self.isStreamStartupBufferReady(
+                                    items: startupBuffer.items,
+                                    bufferedDuration: startupBuffer.bufferedDuration,
+                                    minTotalSeconds: Config.streamPlaybackStartMinTotalSeconds
+                                )
                                 guard shouldStart else { return }
 
                                 player.load(playlist: Playlist(
@@ -259,6 +297,20 @@ enum BookChapterPlayback {
             }
 
             store.updateLastRead(bookId: shelfBook.id, chapterIndex: chapter.index)
+
+            if Config.prefetchEntireNextChapterWhenCurrentReady,
+               let next = upcomingChapter {
+                let copyBook = shelfBook
+                let copyNext = next
+                let copyStore = store
+                Task(priority: .utility) {
+                    await prefetchEntireNextChapterTTSInBackground(
+                        shelfBook: copyBook,
+                        nextChapter: copyNext,
+                        store: copyStore
+                    )
+                }
+            }
         } catch {
             if shouldRollbackAuthorization {
                 await PlaybackAccessController.shared.rollbackPlayback(
@@ -348,6 +400,97 @@ enum BookChapterPlayback {
             print("⚡️ 已预热下一章播放链路: 第 \(chapter.index + 1) 章")
         } catch {
             print("⚠️ 下一章预加载失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 当前章**全部 TTS 生成完成后**，在后台把下一章**整章**过一遍 TTS 以写满缓存，减少切章等待（与 18% 的轻量预热并存）。
+    private static func prefetchEntireNextChapterTTSInBackground(
+        shelfBook: Book,
+        nextChapter: Chapter,
+        store: BookshelfStore
+    ) async {
+        guard Config.prefetchEntireNextChapterWhenCurrentReady else { return }
+        let key = "fullTTS:\(shelfBook.id.uuidString):\(nextChapter.index)"
+        guard await NextChapterFullPrefetchRegistry.shared.shouldStart(key: key) else { return }
+        var didComplete = false
+        defer {
+            Task {
+                await NextChapterFullPrefetchRegistry.shared.finish(
+                    key: key,
+                    completed: didComplete
+                )
+            }
+        }
+        let accessContext = makeAccessContext(shelfBook: shelfBook, chapter: nextChapter)
+        guard await PlaybackAccessController.shared.canWarmupPlayback(for: accessContext) else {
+            return
+        }
+        final class LocalVoiceBindings {
+            var map: [String: String]
+            init(_ m: [String: String]) { self.map = m }
+        }
+        do {
+            let content = try await fetchContent(
+                shelfBookId: shelfBook.id,
+                book: shelfBook,
+                chapter: nextChapter
+            )
+            let normalized = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return }
+
+            let chunks = splitContentForPlayback(
+                normalized,
+                maxChars: Config.chapterTTSDisplayMaxChars
+            )
+            guard !chunks.isEmpty else { return }
+
+            let holder = LocalVoiceBindings(
+                store.books.first(where: { $0.id == shelfBook.id })?.voiceBindings ?? [:]
+            )
+
+            let metadata = NovelMetadata(
+                title: shelfBook.title,
+                author: shelfBook.author,
+                chapterTitle: nextChapter.title,
+                wordCount: normalized.count
+            )
+            let generator = AudioBookGenerator(
+                aiApiKey: Config.aiApiKey,
+                ttsApiKey: Config.ttsApiKey,
+                ttsProvider: Config.ttsProvider
+            )
+
+            for (chunkIndex, chunkText) in chunks.enumerated() {
+                let remoteCacheKey: PlaybackRemoteCacheKey? = {
+                    guard shelfBook.source == .biquge,
+                          let bid = shelfBook.bookId,
+                          !bid.isEmpty else { return nil }
+                    return PlaybackRemoteCacheKey(
+                        bookId: bid,
+                        chapterIndex: nextChapter.index * 1000 + chunkIndex
+                    )
+                }()
+                _ = try await generator.generate(
+                    text: chunkText,
+                    metadata: metadata,
+                    existingVoiceBindings: holder.map,
+                    remoteCacheKey: remoteCacheKey,
+                    progressHandler: { _ in },
+                    onItemReady: nil,
+                    onVoiceBindingsUpdated: { newBindings in
+                        guard !newBindings.isEmpty else { return }
+                        holder.map.merge(newBindings) { _, new in new }
+                        Task { @MainActor in
+                            store.updateVoiceBindings(bookId: shelfBook.id, bindings: newBindings)
+                        }
+                    },
+                    streamItemsAsReady: false
+                )
+            }
+            didComplete = true
+            print("⚡️ 已整章预合成下一章: 第 \(nextChapter.index + 1) 章")
+        } catch {
+            print("⚠️ 下一章整章预合成失败: \(error.localizedDescription)")
         }
     }
 
