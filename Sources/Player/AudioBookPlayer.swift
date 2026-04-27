@@ -34,6 +34,15 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private let cacheManager: AudioCacheManager
     private let sessionManager: PlaybackSessionManager
     private var lastNowPlayingInfoUpdate: TimeInterval = 0
+    #if canImport(UIKit)
+    /// 当前书在 NowPlayingInfo 上挂的 artwork key（shelfBookId 或 playlist:UUID）。
+    /// 用来识别"换书"，不识别"换章"——同一本书内部不重复加载封面。
+    private var currentArtworkBookKey: String?
+    /// 当前已经成功加载到的封面 UIImage（远程或品牌 fallback）。
+    private var currentArtworkImage: UIImage?
+    /// 当前正在异步下载的封面 URL，避免重复发起请求。
+    private var currentArtworkLoadingURL: URL?
+    #endif
     private var isStreamingPlaybackPending = false
     private var pendingRestoredLocalTime: TimeInterval = 0
     private var pendingRestoredItemIndex: Int?
@@ -103,7 +112,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         ChapterPrefetchCoordinator.shared.resetForNewPlayback()
         persistPlaybackState()
         publishNowPlayingInfoCenter()
-        syncLiveActivity()
     }
 
     /// 追加播放项（流式播放时使用）
@@ -131,7 +139,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
         persistPlaybackState()
         updateRemoteCommandAvailability()
-        syncLiveActivity()
     }
 
     public func beginStreamingPlayback() {
@@ -164,7 +171,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         lastErrorMessage = userFacingMessage(for: error)
         state = .error
         publishNowPlayingInfoCenter()
-        syncLiveActivity()
         print("❌ 播放失败: \(lastErrorMessage ?? error.localizedDescription)")
     }
 
@@ -186,7 +192,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             player?.rate = config.playbackRate
             state = .playing
             publishNowPlayingInfoCenter()
-            syncLiveActivity()
             return
         }
 
@@ -215,7 +220,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         state = .paused
         saveSession()
         publishNowPlayingInfoCenter()
-        syncLiveActivity()
         print("⏸️ 已暂停")
     }
 
@@ -227,7 +231,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         lastErrorMessage = nil
         saveSession()
         clearNowPlayingInfoCenter()
-        syncLiveActivity()
         print("⏹️ 已停止")
     }
 
@@ -643,7 +646,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 totalItems: totalItems
             )
             notifyPrefetchAndNowPlaying()
-            syncLiveActivity()
             return
         }
 
@@ -669,7 +671,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         )
         notifyPrefetchAndNowPlaying()
         updateRemoteCommandAvailability()
-        syncLiveActivity()
     }
 
     /// 处理播放完成
@@ -688,7 +689,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                     self.cleanupPlayer()
                     self.state = .loading
                     self.publishNowPlayingInfoCenter()
-                    self.syncLiveActivity()
                     print("⏳ 已播到当前缓冲末尾，等待后续音频生成...")
                 } else if self.currentPlaylist?.chapterContext != nil {
                     self.advanceToNextChapterIfPossible()
@@ -805,13 +805,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     @objc private func handleAppWillTerminate() {
         maybeSaveSessionIfNeeded(force: true)
-        #if os(iOS) && canImport(ActivityKit)
-        if #available(iOS 16.1, *) {
-            Task { @MainActor in
-                FuyaoLiveActivityManager.shared.clearAllActivities()
-            }
-        }
-        #endif
     }
 
     /// 保存播放会话（始终保存当前 AVPlayer 分段内时间，便于恢复）
@@ -871,77 +864,119 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     private func publishNowPlayingInfoCenter() {
         guard currentPlaylist != nil else { return }
         var info = [String: Any]()
+        var bookTitleForArtwork = ""
+        var bookKeyForArtwork = ""
+        var coverURLString: String? = nil
         if let pl = currentPlaylist, let ctx = pl.chapterContext {
             info[MPMediaItemPropertyTitle] = ctx.bookTitle
             if let t = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title {
                 info[MPMediaItemPropertyArtist] = t
             }
+            bookTitleForArtwork = ctx.bookTitle
+            bookKeyForArtwork = ctx.shelfBookId.uuidString
+            coverURLString = ctx.bookCoverURL
         } else if let pl = currentPlaylist {
             info[MPMediaItemPropertyTitle] = pl.title
+            bookTitleForArtwork = pl.title
+            bookKeyForArtwork = "playlist:\(pl.id.uuidString)"
         }
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = progress.currentTime
         info[MPMediaItemPropertyPlaybackDuration] = max(progress.duration, 0)
         info[MPNowPlayingInfoPropertyPlaybackRate] = (state == .playing) ? Double(config.playbackRate) : 0.0
         info[MPNowPlayingInfoPropertyPlaybackQueueCount] = progress.totalItems
         info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = progress.currentItemIndex
+        #if canImport(UIKit)
+        if let artwork = makeNowPlayingArtwork(
+            bookKey: bookKeyForArtwork,
+            bookTitle: bookTitleForArtwork,
+            coverURLString: coverURLString
+        ) {
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+        #endif
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         updateRemoteCommandAvailability()
     }
 
     private func clearNowPlayingInfoCenter() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        #if canImport(UIKit)
+        currentArtworkBookKey = nil
+        currentArtworkImage = nil
+        currentArtworkLoadingURL = nil
+        #endif
         updateRemoteCommandAvailability()
     }
 
-    private func syncLiveActivity() {
-        #if os(iOS) && canImport(ActivityKit)
-        guard #available(iOS 16.1, *),
-              let state = makeLiveActivityState() else {
-            if #available(iOS 16.1, *) {
-                Task { @MainActor in
-                    FuyaoLiveActivityManager.shared.end()
+    #if canImport(UIKit)
+    /// 构建 MPMediaItemArtwork。优先使用远程书籍封面，失败/未加载时使用品牌色 fallback；
+    /// 若远程封面尚未下载完成，会在后台异步拉取，下载完成后再次 publish。
+    private func makeNowPlayingArtwork(
+        bookKey: String,
+        bookTitle: String,
+        coverURLString: String?
+    ) -> MPMediaItemArtwork? {
+        guard !bookKey.isEmpty else { return nil }
+
+        // 切书时清掉上一本书的 artwork 状态，避免封面错配。
+        if currentArtworkBookKey != bookKey {
+            currentArtworkBookKey = bookKey
+            currentArtworkImage = nil
+            currentArtworkLoadingURL = nil
+        }
+
+        let resolvedURL = NowPlayingArtworkProvider.resolveURL(from: coverURLString)
+
+        // 优先用已成功加载的图（来自上一次下载或缓存）。
+        var imageToUse: UIImage? = currentArtworkImage
+
+        // 命中全局缓存。
+        if imageToUse == nil,
+           let url = resolvedURL,
+           let cached = NowPlayingArtworkProvider.cachedRemoteImage(for: url.absoluteString) {
+            currentArtworkImage = cached
+            imageToUse = cached
+        }
+
+        // 还没有真实封面 → 用品牌色 fallback（蓝紫色调，至少让灵动岛 / 锁屏不再空白、波形也不再灰）。
+        let displayedImage = imageToUse ?? NowPlayingArtworkProvider.brandFallbackImage(for: bookTitle)
+
+        // 仍未拿到真实封面，且 URL 有效 → 起一次后台下载。
+        if imageToUse == nil,
+           let url = resolvedURL,
+           currentArtworkLoadingURL != url {
+            currentArtworkLoadingURL = url
+            let bookKeyAtRequest = bookKey
+            URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+                guard error == nil,
+                      let data,
+                      let image = UIImage(data: data) else {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        if self.currentArtworkLoadingURL == url {
+                            self.currentArtworkLoadingURL = nil
+                        }
+                    }
+                    return
                 }
-            }
-            return
-        }
-        Task { @MainActor in
-            FuyaoLiveActivityManager.shared.sync(with: state)
-        }
-        #endif
-    }
-
-    #if os(iOS) && canImport(ActivityKit)
-    private func makeLiveActivityState() -> FuyaoPlaybackLiveState? {
-        guard #available(iOS 16.1, *),
-              let playlist = currentPlaylist else {
-            return nil
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    // 期间用户切书 → 丢弃这次结果。
+                    guard self.currentArtworkBookKey == bookKeyAtRequest else { return }
+                    NowPlayingArtworkProvider.setCachedRemoteImage(image, for: url.absoluteString)
+                    self.currentArtworkImage = image
+                    self.currentArtworkLoadingURL = nil
+                    // 真实封面到位，立刻刷一次 NowPlayingInfo，让锁屏 / 灵动岛换图。
+                    self.publishNowPlayingInfoCenter()
+                }
+            }.resume()
         }
 
-        let bookTitle: String
-        let chapterTitle: String
-
-        if let ctx = playlist.chapterContext {
-            bookTitle = ctx.bookTitle
-            chapterTitle = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })?.title
-                ?? playlist.title
-        } else {
-            bookTitle = playlist.title
-            chapterTitle = playlist.currentItem?.segment.speaker?.name ?? "当前播放"
+        // MPMediaItemArtwork 在 iOS 上只接受 UIImage。closure 由系统在需要尺寸时回调。
+        let baseSize = displayedImage.size
+        return MPMediaItemArtwork(boundsSize: baseSize) { requestedSize in
+            return NowPlayingArtworkProvider.resizedImage(displayedImage, to: requestedSize)
         }
-
-        if state == .stopped || state == .idle {
-            return nil
-        }
-
-        return FuyaoPlaybackLiveState(
-            playlistID: playlist.id.uuidString,
-            bookTitle: bookTitle,
-            chapterTitle: chapterTitle,
-            bookCoverURL: playlist.chapterContext?.bookCoverURL,
-            isPlaying: state == .playing,
-            elapsedTime: progress.currentTime,
-            duration: progress.duration
-        )
     }
     #endif
 
@@ -950,13 +985,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         maybeSaveSessionIfNeeded(force: true)
         cleanupPlayer()
         sleepTimer?.invalidate()
-        #if os(iOS) && canImport(ActivityKit)
-        if #available(iOS 16.1, *) {
-            Task { @MainActor in
-                FuyaoLiveActivityManager.shared.end()
-            }
-        }
-        #endif
         #if canImport(UIKit)
         UIApplication.shared.endReceivingRemoteControlEvents()
         #endif
@@ -985,7 +1013,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
             self.player?.rate = self.config.playbackRate
             self.state = .playing
             self.publishNowPlayingInfoCenter()
-            self.syncLiveActivity()
             print("▶️ 开始播放: \(item.segment.text.prefix(20))...")
         }
 
@@ -1058,7 +1085,6 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         cleanupPlayer()
         state = .loading
         publishNowPlayingInfoCenter()
-        syncLiveActivity()
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1336,3 +1362,149 @@ class PlaybackSessionManager {
         }
     }
 }
+
+#if canImport(UIKit)
+/// 锁屏 / 灵动岛 NowPlayingInfo 用的封面图工具：
+/// - 远程封面下载 + 内存缓存
+/// - URL 标准化（兼容 //、/ 开头的相对路径）
+/// - 无封面/失败时绘制一张品牌蓝紫渐变 fallback（用书名首字符做 hero）
+/// - MPMediaItemArtwork 系统按需 resize 时复用同一张高清图
+enum NowPlayingArtworkProvider {
+    private static let remoteCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 32
+        return cache
+    }()
+    private static let brandCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 32
+        return cache
+    }()
+
+    static func cachedRemoteImage(for key: String) -> UIImage? {
+        return remoteCache.object(forKey: key as NSString)
+    }
+
+    static func setCachedRemoteImage(_ image: UIImage, for key: String) {
+        remoteCache.setObject(image, forKey: key as NSString)
+    }
+
+    static func resolveURL(from raw: String?) -> URL? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+        if let direct = URL(string: raw), direct.scheme != nil {
+            return direct
+        }
+        if raw.hasPrefix("//") {
+            return URL(string: "https:\(raw)")
+        }
+        if raw.hasPrefix("/") {
+            return URL(string: "https://www.bqg291.cc\(raw)")
+        }
+        return URL(string: "https://www.bqg291.cc/\(raw)")
+    }
+
+    static func resizedImage(_ image: UIImage, to targetSize: CGSize) -> UIImage {
+        let bounded = CGSize(
+            width: max(targetSize.width, 1),
+            height: max(targetSize.height, 1)
+        )
+        if abs(image.size.width - bounded.width) < 1,
+           abs(image.size.height - bounded.height) < 1 {
+            return image
+        }
+        let renderer = UIGraphicsImageRenderer(size: bounded)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: bounded))
+        }
+    }
+
+    /// 品牌蓝紫渐变 + 书名首字 fallback。一旦绘制完成会缓存，避免每次 publish 重画。
+    static func brandFallbackImage(for title: String, side: CGFloat = 600) -> UIImage {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = "\(trimmed)|\(Int(side))" as NSString
+        if let cached = brandCache.object(forKey: key) {
+            return cached
+        }
+        let size = CGSize(width: side, height: side)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { ctx in
+            let cg = ctx.cgContext
+
+            let colors: [CGColor] = [
+                UIColor(red: 0.42, green: 0.48, blue: 0.88, alpha: 1).cgColor,
+                UIColor(red: 0.55, green: 0.50, blue: 0.92, alpha: 1).cgColor,
+                UIColor(red: 0.66, green: 0.54, blue: 0.96, alpha: 1).cgColor
+            ]
+            let space = CGColorSpaceCreateDeviceRGB()
+            if let gradient = CGGradient(
+                colorsSpace: space,
+                colors: colors as CFArray,
+                locations: [0.0, 0.5, 1.0]
+            ) {
+                cg.drawLinearGradient(
+                    gradient,
+                    start: .zero,
+                    end: CGPoint(x: size.width, y: size.height),
+                    options: []
+                )
+            } else {
+                UIColor(red: 0.55, green: 0.50, blue: 0.92, alpha: 1).setFill()
+                cg.fill(CGRect(origin: .zero, size: size))
+            }
+
+            let highlightRect = CGRect(
+                x: -size.width * 0.18,
+                y: -size.height * 0.10,
+                width: size.width * 0.85,
+                height: size.height * 0.85
+            )
+            cg.saveGState()
+            cg.setBlendMode(.plusLighter)
+            UIColor.white.withAlphaComponent(0.10).setFill()
+            cg.fillEllipse(in: highlightRect)
+            cg.restoreGState()
+
+            let initial = String(trimmed.prefix(1))
+            if !initial.isEmpty {
+                let font = UIFont.systemFont(ofSize: side * 0.42, weight: .heavy)
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: UIColor.white.withAlphaComponent(0.94)
+                ]
+                let str = NSAttributedString(string: initial, attributes: attrs)
+                let strSize = str.size()
+                let rect = CGRect(
+                    x: (size.width - strSize.width) / 2,
+                    y: (size.height - strSize.height) / 2 - size.height * 0.04,
+                    width: strSize.width,
+                    height: strSize.height
+                )
+                str.draw(in: rect)
+
+                let subtitle = String(trimmed.prefix(8))
+                if !subtitle.isEmpty {
+                    let subFont = UIFont.systemFont(ofSize: side * 0.07, weight: .semibold)
+                    let subAttrs: [NSAttributedString.Key: Any] = [
+                        .font: subFont,
+                        .foregroundColor: UIColor.white.withAlphaComponent(0.86)
+                    ]
+                    let sub = NSAttributedString(string: subtitle, attributes: subAttrs)
+                    let subSize = sub.size()
+                    let subRect = CGRect(
+                        x: (size.width - subSize.width) / 2,
+                        y: rect.maxY + size.height * 0.04,
+                        width: subSize.width,
+                        height: subSize.height
+                    )
+                    sub.draw(in: subRect)
+                }
+            }
+        }
+        brandCache.setObject(image, forKey: key)
+        return image
+    }
+}
+#endif

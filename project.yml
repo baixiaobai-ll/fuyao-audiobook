@@ -35,8 +35,6 @@ targets:
       - framework: Vendor/NumberAuthSDK/ATAuthSDK.xcframework
       - framework: Vendor/NumberAuthSDK/YTXOperators.xcframework
       - framework: Vendor/NumberAuthSDK/YTXMonitor.xcframework
-      - target: 扶摇WidgetExtension
-        embed: true
     info:
       path: App/Info.plist
       properties:
@@ -47,7 +45,6 @@ targets:
               - fuyao
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSSupportsLiveActivities: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -88,58 +85,17 @@ targets:
         com.apple.BackgroundModes:
           enabled: 1
 
-  扶摇WidgetExtension:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "16.1"
-    sources:
-      - path: Widgets
-      - path: Sources/LiveActivity
-    resources:
-      - path: App/Assets.xcassets
-      - path: Widgets/FuyaoWidgetAssets.xcassets
-    dependencies:
-      - sdk: SwiftUI.framework
-      - sdk: WidgetKit.framework
-      - sdk: ActivityKit.framework
-    info:
-      path: Widgets/Info.plist
-      properties:
-        CFBundleDisplayName: 扶摇小组件
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.fuyao.audiobook.widget
-      INFOPLIST_FILE: Widgets/Info.plist
-      IPHONEOS_DEPLOYMENT_TARGET: "16.1"
-      SKIP_INSTALL: YES
-
-# 显式声明共享 scheme，避免 xcodegen 重生成后只剩 WidgetExtension 这一条 user scheme，
+# 显式声明共享 scheme，避免 xcodegen 重生成后没有合适的 user scheme，
 # 导致 Xcode 顶部找不到主 App 可执行入口。
 schemes:
   扶摇:
     build:
       targets:
         扶摇: all
-        扶摇WidgetExtension: [run, profile, archive]
     run:
       config: Debug
       executable: 扶摇
     test:
-      config: Debug
-    profile:
-      config: Release
-    analyze:
-      config: Debug
-    archive:
-      config: Release
-  扶摇WidgetExtension:
-    build:
-      targets:
-        扶摇WidgetExtension: all
-    run:
       config: Debug
     profile:
       config: Release

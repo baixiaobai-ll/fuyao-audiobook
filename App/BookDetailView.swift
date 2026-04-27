@@ -138,6 +138,7 @@ struct BookDetailView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 16)
         }
+        .scrollIndicators(.hidden)
         .background(detailBackground.ignoresSafeArea())
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -879,6 +880,7 @@ struct BookDetailView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
                 }
+                .scrollIndicators(.hidden)
             }
             .navigationTitle("配音设置")
             .navigationBarTitleDisplayMode(.inline)

@@ -1,7 +1,4 @@
 import SwiftUI
-#if os(iOS) && canImport(ActivityKit)
-import ActivityKit
-#endif
 
 @main
 struct FuyaoApp: App {
@@ -29,7 +26,6 @@ struct FuyaoApp: App {
                 }
             }
             .onAppear {
-                clearResidualLiveActivitiesIfNeeded()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     withAnimation(.easeOut(duration: 0.6)) {
                         showSplash = false
@@ -42,19 +38,9 @@ struct FuyaoApp: App {
             .onChange(of: scenePhase) { newPhase in
                 if newPhase == .background, player.state == .playing {
                     player.play()
-                } else if newPhase == .inactive, player.state == .stopped {
-                    clearResidualLiveActivitiesIfNeeded()
                 }
             }
         }
-    }
-
-    private func clearResidualLiveActivitiesIfNeeded() {
-        #if os(iOS) && canImport(ActivityKit)
-        if #available(iOS 16.1, *), player.state == .idle || player.state == .stopped {
-            FuyaoLiveActivityManager.shared.clearAllActivities()
-        }
-        #endif
     }
 
     private func handlePlayerShortcut(url: URL) {

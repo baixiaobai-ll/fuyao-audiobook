@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct BookshelfView: View {
     @EnvironmentObject var store: BookshelfStore
@@ -25,6 +28,14 @@ struct BookshelfView: View {
         NavigationStack {
             ZStack {
                 bookshelfBackground
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if isEditingShelf {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                isEditingShelf = false
+                            }
+                        }
+                    }
 
                 if showImportMenu {
                     Color.black.opacity(0.001)
@@ -54,7 +65,20 @@ struct BookshelfView: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
                             .padding(.bottom, 24)
+                            .background(
+                                // 透明兜底层：仅在子按钮（书籍、X 角标、导入入口）未消费的"留白"区域接管点击。
+                                Color.clear
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if isEditingShelf {
+                                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                                isEditingShelf = false
+                                            }
+                                        }
+                                    }
+                            )
                         }
+                        .scrollIndicators(.hidden)
                     }
                 }
 
@@ -83,17 +107,6 @@ struct BookshelfView: View {
             )) {
                 if let book = selectedBook {
                     BookDetailView(book: book)
-                }
-            }
-            .toolbar {
-                if isEditingShelf {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button("完成") {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                isEditingShelf = false
-                            }
-                        }
-                    }
                 }
             }
             .fileImporter(
@@ -171,7 +184,7 @@ struct BookshelfView: View {
                 Text("书籍列表")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                Text(isEditingShelf ? "轻点右上角的红色按钮移除书籍" : "轻点封面进入详情，长按书籍进入整理模式")
+                Text(isEditingShelf ? "轻点角标移除书籍，点击其他区域退出整理" : "轻点封面进入详情，长按书籍进入整理模式")
                     .font(.footnote)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
@@ -294,6 +307,8 @@ struct BookshelfView: View {
     private func bookshelfCard(for book: Book) -> some View {
         ZStack(alignment: .topTrailing) {
             Button {
+                // 整理模式下书籍卡片本身不响应——避免长按结束、手指抬起时
+                // 被 SwiftUI 误判为一次 tap 而立刻退出整理模式。
                 guard !isEditingShelf else { return }
                 selectedBook = book
             } label: {
@@ -305,6 +320,9 @@ struct BookshelfView: View {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                         isEditingShelf = true
                     }
+                    #if canImport(UIKit)
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    #endif
                 }
             )
 
@@ -317,22 +335,23 @@ struct BookshelfView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .padding(4)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
                         .background(
                             Circle()
-                                .fill(Color.red.gradient)
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color.white.opacity(0.6), lineWidth: 1)
-                                )
+                                .fill(Color(red: 0.94, green: 0.42, blue: 0.45).opacity(0.92))
                         )
-                        .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 4)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.10), radius: 3, x: 0, y: 1.5)
                 }
-                .offset(x: 8, y: -8)
+                .offset(x: 4, y: -4)
                 .buttonStyle(LiftPressButtonStyle(scale: 0.9))
+                .accessibilityLabel("移除《\(book.title)》")
             }
         }
     }
@@ -398,6 +417,7 @@ struct BookshelfView: View {
             .padding(.horizontal, 16)
             .padding(.top, 16)
         }
+        .scrollIndicators(.hidden)
     }
 
     private func shelfMetricCard<Icon: View>(
