@@ -687,6 +687,11 @@ struct BookDetailView: View {
         generatingChapterIndex = chapter.index
         statusMessage = "获取章节内容..."
         errorMessage = nil
+        tabRouter.beginPlaybackPreparation(
+            bookTitle: shelfBook.title,
+            chapterTitle: chapter.title,
+            message: "获取章节内容..."
+        )
 
         let chIndex = chapter.index
         let shelf = shelfBook
@@ -701,12 +706,15 @@ struct BookDetailView: View {
                     allChapters: chList,
                     store: store,
                     player: player,
-                    onProgressMessage: { msg in statusMessage = msg },
+                    onProgressMessage: { msg in
+                        statusMessage = msg
+                        tabRouter.updatePlaybackPreparation(message: msg)
+                    },
                     onFirstPlaybackStarted: {
                         isGenerating = false
                         generatingChapterIndex = nil
                         loadedChapterIndex = chIndex
-                        tabRouter.openPlayTab()
+                        tabRouter.finishPlaybackPreparation(openPlayer: true)
                     }
                 )
                 isGenerating = false
@@ -714,6 +722,7 @@ struct BookDetailView: View {
             } catch is CancellationError {
                 isGenerating = false
                 generatingChapterIndex = nil
+                tabRouter.finishPlaybackPreparation(openPlayer: false)
             } catch {
                 print("❌ 章节生成失败: \(error)")
                 let rawMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -721,6 +730,7 @@ struct BookDetailView: View {
                 errorMessage = friendlyGenerationErrorMessage(error)
                 isGenerating = false
                 generatingChapterIndex = nil
+                tabRouter.finishPlaybackPreparation(openPlayer: false)
             }
         }
     }

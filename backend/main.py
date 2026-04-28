@@ -546,6 +546,29 @@ class FuyaoBackendApp:
             response["session"] = {"expiresAt": session["expiresAt"]}
         json_response(handler, 200, response)
 
+    def handle_profile_update(self, handler: BaseHTTPRequestHandler) -> None:
+        session = self.authenticate(handler, required=True)
+        payload = read_json(handler)
+        raw_nickname = str(payload.get("nickname", "")).strip()
+        nickname = re.sub(r"\s+", " ", raw_nickname)
+        if not nickname:
+            raise ApiError(400, "invalid_nickname", "Nickname cannot be empty.")
+        if len(nickname) > 20:
+            raise ApiError(400, "invalid_nickname", "Nickname must be at most 20 characters.")
+
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE users SET nickname = ? WHERE id = ?",
+                (nickname, session["user"]["id"]),
+            )
+            user_row = conn.execute(
+                "SELECT id, phone, nickname, created_at, last_login_at FROM users WHERE id = ?",
+                (session["user"]["id"],),
+            ).fetchone()
+            response = status_payload(conn, self.config, user_row)
+            response["session"] = {"expiresAt": session["expiresAt"]}
+        json_response(handler, 200, response)
+
     def handle_activation_redeem(self, handler: BaseHTTPRequestHandler) -> None:
         session = self.authenticate(handler, required=True)
         payload = read_json(handler)
@@ -767,6 +790,9 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._dispatch()
 
+    def do_PATCH(self) -> None:
+        self._dispatch()
+
     def log_message(self, format: str, *args) -> None:
         return
 
@@ -787,6 +813,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if self.command == "GET" and path == "/v1/auth/me":
                 self.app.handle_auth_me(self)
+                return
+            if self.command == "PATCH" and path == "/v1/profile":
+                self.app.handle_profile_update(self)
                 return
             if self.command == "POST" and path == "/v1/activation/redeem":
                 self.app.handle_activation_redeem(self)

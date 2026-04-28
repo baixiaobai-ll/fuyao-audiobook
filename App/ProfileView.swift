@@ -16,6 +16,9 @@ struct ProfileView: View {
     @State private var activationCode = ""
     @State private var activationMessage: ActivationMessage?
     @State private var isSubmittingActivation = false
+    @State private var isSavingNickname = false
+    @State private var nicknameEditError: String?
+    @FocusState private var nicknameFieldFocused: Bool
     @AppStorage("fuyao_activation_status") private var activationStatusRaw = ActivationState.inactive.rawValue
     @AppStorage("fuyao_activation_plan_name") private var activationPlanName = "扶摇云端畅听"
     @AppStorage("fuyao_activation_remaining_quota") private var activationRemainingQuota = 0
@@ -86,28 +89,27 @@ struct ProfileView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                         .zIndex(9)
                 }
+
+                if showNicknameEdit {
+                    nicknameEditOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .zIndex(11)
+                }
             }
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.large)
             .tint(pageIndigo)
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showLogoutConfirm)
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showActivationSheet)
+            .animation(.spring(response: 0.22, dampingFraction: 0.9), value: showNicknameEdit)
             .onAppear {
                 calculateCacheSizes()
             }
             .sheet(isPresented: $showAvatarPicker) {
                 AvatarPickerView()
                     .environmentObject(profileStore)
-            }
-            .alert("修改昵称", isPresented: $showNicknameEdit) {
-                TextField("输入新昵称", text: $editingNickname)
-                Button("保存") {
-                    let trimmed = editingNickname.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        profileStore.updateNickname(trimmed)
-                    }
-                }
-                Button("取消", role: .cancel) {}
+                    .presentationDetents([.height(520), .large])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -369,25 +371,58 @@ struct ProfileView: View {
             Button {
                 showAvatarPicker = true
             } label: {
-                avatarView(size: 64)
+                ZStack(alignment: .bottomTrailing) {
+                    avatarView(size: 68)
+
+                    Image(systemName: "camera.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [pageBlue, pagePurple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                        .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 2))
+                        .offset(x: 2, y: 2)
+                }
+                .frame(width: 82, height: 82)
+                .contentShape(Circle())
             }
             .buttonStyle(LiftPressButtonStyle(scale: 0.96))
 
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    editingNickname = profileStore.nickname
-                    showNicknameEdit = true
+                    presentNicknameEditor()
                 } label: {
-                    HStack(spacing: 6) {
-                        Text(profileStore.nickname)
-                            .font(.title2.bold())
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profileStore.nickname)
+                                .font(.title2.bold())
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .lineLimit(1)
+
+                            Text("点击修改昵称")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(pagePurple.opacity(0.92))
+                        }
 
                         Image(systemName: "square.and.pencil")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(pagePurple)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(pagePurple.opacity(0.86))
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(pagePurple.opacity(0.16)))
+                            .overlay(Circle().stroke(Color.white.opacity(0.72), lineWidth: 1))
+                            .padding(.top, 2)
                     }
-                    .contentShape(Rectangle())
+                    .padding(.vertical, 6)
+                    .padding(.trailing, 8)
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -401,6 +436,144 @@ struct ProfileView: View {
             }
 
             Spacer()
+        }
+    }
+
+    private var nicknameEditOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismissNicknameEditor()
+                }
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("修改昵称")
+                        .font(.title3.bold())
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Spacer()
+
+                    Button {
+                        dismissNicknameEditor()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(Color.white.opacity(0.72)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                TextField("输入新昵称", text: $editingNickname)
+                    .focused($nicknameFieldFocused)
+                    .textInputAutocapitalization(.never)
+                    .disableAutocorrection(true)
+                    .font(.headline)
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.white.opacity(0.82))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(pagePurple.opacity(0.22), lineWidth: 1)
+                            )
+                    )
+
+                if let nicknameEditError {
+                    Text(nicknameEditError)
+                        .font(.caption)
+                        .foregroundStyle(Color.red.opacity(0.88))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Button {
+                    saveNicknameEdit()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSavingNickname {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                        Text(isSavingNickname ? "保存中..." : "保存")
+                            .font(.headline)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(
+                        LinearGradient(
+                            colors: [pageBlue, pagePurple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                            )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(LiftPressButtonStyle(scale: 0.98))
+                .disabled(editingNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingNickname)
+                .opacity(editingNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+            }
+            .padding(22)
+            .frame(maxWidth: 340)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color.white.opacity(0.96))
+                    .shadow(color: Color.black.opacity(0.12), radius: 30, x: 0, y: 16)
+            )
+            .padding(.horizontal, 28)
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                nicknameFieldFocused = true
+            }
+        }
+    }
+
+    private func presentNicknameEditor() {
+        editingNickname = profileStore.nickname
+        nicknameEditError = nil
+        showNicknameEdit = true
+    }
+
+    private func dismissNicknameEditor() {
+        guard !isSavingNickname else { return }
+        nicknameFieldFocused = false
+        showNicknameEdit = false
+        nicknameEditError = nil
+    }
+
+    private func saveNicknameEdit() {
+        let trimmed = editingNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isSavingNickname else { return }
+        isSavingNickname = true
+        nicknameEditError = nil
+
+        Task {
+            do {
+                let savedNickname = try await ProfileAPIClient.updateNickname(
+                    trimmed,
+                    sessionToken: profileStore.sessionToken
+                )
+                await MainActor.run {
+                    profileStore.updateNickname(savedNickname)
+                    isSavingNickname = false
+                    dismissNicknameEditor()
+                }
+            } catch let error as ProfileAPIError {
+                await MainActor.run {
+                    nicknameEditError = error.userMessage
+                    isSavingNickname = false
+                }
+            } catch {
+                await MainActor.run {
+                    nicknameEditError = error.localizedDescription
+                    isSavingNickname = false
+                }
+            }
         }
     }
 
@@ -911,6 +1084,185 @@ struct ProfileView: View {
 
     private func logActivation(stage: String, code: String, message: String) {
         print("[Activation] stage=\(stage) code=\(code) message=\(message)")
+    }
+}
+
+private enum ProfileAPIError: Error, Equatable {
+    case missingBaseURL
+    case missingSessionToken
+    case invalidResponse(String)
+    case server(String)
+    case transport(String)
+
+    var userMessage: String {
+        switch self {
+        case .missingBaseURL:
+            return "未配置用户资料服务地址，请先检查 `AUTH_API_BASE_URL`。"
+        case .missingSessionToken:
+            return "当前登录态缺少会话令牌，请重新登录后再试。"
+        case .invalidResponse(let message):
+            return "用户资料服务返回内容无法识别：\(message)"
+        case .server(let message):
+            return message
+        case .transport(let message):
+            return message
+        }
+    }
+}
+
+private enum ProfileAPIClient {
+    private static let updateProfilePath = "v1/profile"
+
+    static func updateNickname(_ nickname: String, sessionToken: String?) async throws -> String {
+        guard let rawSessionToken = sessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawSessionToken.isEmpty else {
+            throw ProfileAPIError.missingSessionToken
+        }
+
+        let data = try await request(
+            path: updateProfilePath,
+            method: "PATCH",
+            sessionToken: rawSessionToken,
+            jsonBody: ["nickname": nickname]
+        )
+        let json = try parseJSON(data)
+        let user = firstObject(in: json, keys: ["user", "profile", "account"]) ?? json
+        guard let savedNickname = firstString(in: user, keys: ["nickname", "nickName", "displayName", "name"]) else {
+            throw ProfileAPIError.invalidResponse("缺少 user.nickname")
+        }
+        return savedNickname
+    }
+
+    private static func request(
+        path: String,
+        method: String,
+        sessionToken: String,
+        jsonBody: [String: Any]
+    ) async throws -> Data {
+        guard let base = Config.authAPIBaseURL else {
+            throw ProfileAPIError.missingBaseURL
+        }
+
+        let trimmed = base
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty, let baseURL = URL(string: trimmed) else {
+            throw ProfileAPIError.missingBaseURL
+        }
+
+        let url = baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(sessionToken, forHTTPHeaderField: "X-Session-Token")
+        request.setValue(sessionToken, forHTTPHeaderField: "X-Auth-Token")
+        request.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+
+        print("[Profile] stage=请求后端 code=CLIENT_PROFILE_REQUEST message=\(method) \(url.absoluteString)")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw ProfileAPIError.invalidResponse("缺少 HTTP 状态码")
+            }
+
+            guard (200...299).contains(http.statusCode) else {
+                let json = try? parseJSON(data)
+                let message = json.flatMap {
+                    firstString(in: $0, keys: ["message", "msg", "error", "errorMessage", "detail"])
+                } ?? "用户资料服务返回 \(http.statusCode)"
+                throw ProfileAPIError.server(message)
+            }
+
+            return data
+        } catch let error as ProfileAPIError {
+            throw error
+        } catch let error as URLError {
+            throw ProfileAPIError.transport(describeTransportError(error, url: url))
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain {
+                let code = URLError.Code(rawValue: nsError.code)
+                let urlError = URLError(code)
+                throw ProfileAPIError.transport(describeTransportError(urlError, url: url))
+            }
+            throw ProfileAPIError.transport(error.localizedDescription)
+        }
+    }
+
+    private static func parseJSON(_ data: Data) throws -> Any {
+        do {
+            return try JSONSerialization.jsonObject(with: data)
+        } catch {
+            if let raw = String(data: data, encoding: .utf8), !raw.isEmpty {
+                throw ProfileAPIError.invalidResponse(raw)
+            }
+            throw ProfileAPIError.invalidResponse(error.localizedDescription)
+        }
+    }
+
+    private static func firstString(in value: Any, keys: [String], depth: Int = 5) -> String? {
+        guard depth >= 0 else { return nil }
+        if let dictionary = value as? [String: Any] {
+            for key in keys {
+                if let string = dictionary[key] as? String,
+                   !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return string
+                }
+                if let number = dictionary[key] as? NSNumber {
+                    return number.stringValue
+                }
+            }
+            for nested in dictionary.values {
+                if let result = firstString(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array {
+                if let result = firstString(in: item, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func firstObject(in value: Any, keys: [String], depth: Int = 5) -> Any? {
+        guard depth >= 0 else { return nil }
+        if let dictionary = value as? [String: Any] {
+            for key in keys {
+                if let object = dictionary[key] {
+                    return object
+                }
+            }
+            for nested in dictionary.values {
+                if let result = firstObject(in: nested, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array {
+                if let result = firstObject(in: item, keys: keys, depth: depth - 1) {
+                    return result
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func describeTransportError(_ error: URLError, url: URL) -> String {
+        let host = url.host ?? url.absoluteString
+        switch error.code {
+        case .notConnectedToInternet:
+            return "当前网络不可用，无法访问用户资料服务 `\(host)`。请检查手机联网状态后重试。"
+        case .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .timedOut:
+            return "无法连接用户资料服务 `\(host)`。请确认后端服务已启动，且地址与端口可以从真机访问。"
+        default:
+            return "调用用户资料服务 `\(host)` 失败：\(error.localizedDescription)"
+        }
     }
 }
 

@@ -82,6 +82,15 @@ struct ContentView: View {
                 .environmentObject(profileStore)
                 .environmentObject(tabRouter)
         }
+        .overlay(alignment: .top) {
+            if let preparation = tabRouter.playbackPreparation {
+                playbackPreparationBanner(preparation)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: tabRouter.playbackPreparation)
     }
 
     private var smsLoginPresented: Binding<Bool> {
@@ -107,6 +116,57 @@ struct ContentView: View {
                 .frame(width: 28, height: 28)
             Text(title)
         }
+    }
+
+    private func playbackPreparationBanner(_ preparation: MainTabRouter.PlaybackPreparation) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.43, green: 0.66, blue: 0.97),
+                                Color(red: 0.62, green: 0.49, blue: 0.95)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 38, height: 38)
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(0.82)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("正在缓冲，准备好后自动播放")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("\(preparation.bookTitle) · \(preparation.chapterTitle)")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineLimit(1)
+                if !preparation.message.isEmpty {
+                    Text(preparation.message)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.Colors.textSecondary.opacity(0.86))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.72), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.09), radius: 18, x: 0, y: 10)
+        )
     }
 
     private static func selectionIndicatorImage() -> UIImage? {

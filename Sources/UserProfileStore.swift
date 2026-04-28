@@ -177,7 +177,6 @@ final class UserProfileStore: ObservableObject {
         self.nickname = nickname ?? "书友\(String(phone.suffix(4)))"
         self.userId = ""
         self.sessionToken = ""
-        self.avatarSource = .preset(AvatarPresetCatalog.defaultId)
         save()
     }
 
@@ -203,9 +202,6 @@ final class UserProfileStore: ObservableObject {
             : "书友\(String(phone.suffix(4)))"
         self.userId = userId ?? ""
         self.sessionToken = sessionToken ?? ""
-        if case .preset = avatarSource {
-            avatarSource = .preset(AvatarPresetCatalog.defaultId)
-        }
 
         let normalizedStatus: String
         normalizedStatus = Self.normalizeActivationStatus(activationStatusRaw)
@@ -249,10 +245,8 @@ final class UserProfileStore: ObservableObject {
         isLoggedIn = false
         isActivated = false
         phone = ""
-        nickname = ""
         userId = ""
         sessionToken = ""
-        avatarSource = .preset(AvatarPresetCatalog.defaultId)
         resetAccessState()
         save()
     }
