@@ -38,7 +38,7 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: 扶摇
+        CFBundleDisplayName: 扶摇FM
         CFBundleURLTypes:
           - CFBundleURLName: com.fuyao.audiobook
             CFBundleURLSchemes:
