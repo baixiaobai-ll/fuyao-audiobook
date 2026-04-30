@@ -1,0 +1,34 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name fuyao.site www.fuyao.site;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name fuyao.site www.fuyao.site;
+
+    ssl_certificate /etc/letsencrypt/live/fuyao.site/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/fuyao.site/privkey.pem;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer-when-downgrade always;
+
+    location = / {
+        return 302 /legal/privacy;
+    }
+
+    location /legal/ {
+        alias /opt/fuyao-backend/current/backend/static/legal/;
+        try_files $uri $uri.html =404;
+    }
+}

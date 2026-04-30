@@ -33,6 +33,8 @@ struct LoginView: View {
     private let pageIndigo = Color(red: 0.35, green: 0.45, blue: 0.82)
     private let pageRose = Color(red: 0.35, green: 0.45, blue: 0.82)
     private let softField = Color(red: 0.96, green: 0.96, blue: 0.97)
+    fileprivate static let termsURLString = "https://fuyao.site/legal/terms"
+    fileprivate static let privacyURLString = "https://fuyao.site/legal/privacy"
 
     var body: some View {
         NavigationStack {
@@ -278,15 +280,10 @@ struct LoginView: View {
             }
             .buttonStyle(.plain)
 
-            (
-                Text("\(prefix) ")
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                + Text("《用户服务协议》、《隐私政策》")
-                    .foregroundColor(pageRose)
-                + Text(" 并授权扶摇完成验证码登录")
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-            )
+            Text(.init("\(prefix) [《用户服务协议》](\(Self.termsURLString))、[《隐私政策》](\(Self.privacyURLString)) 并授权扶摇完成验证码登录"))
             .font(.system(size: 12, weight: .medium))
+            .foregroundColor(AppTheme.Colors.textSecondary)
+            .tint(pageRose)
             .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -2109,6 +2106,8 @@ private final class OneClickAuthSDKSession {
         ]
         model.privacyPreText = "登录即代表同意"
         model.privacySufText = "并授权扶摇完成本机号码认证"
+        model.privacyOne = ["《用户服务协议》", LoginView.termsURLString]
+        model.privacyTwo = ["《隐私政策》", LoginView.privacyURLString]
         model.privacyFont = UIFont.systemFont(ofSize: 12)
         model.privacyOperatorColor = indigo
         model.privacyLineSpaceDp = 3

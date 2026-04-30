@@ -210,3 +210,99 @@ After this passes, switch the iOS app config:
 
 - `AUTH_API_BASE_URL=https://api.fuyao.site`
 - remove development-only ATS arbitrary loads
+
+## 9. Public Legal Pages
+
+TestFlight and App Store review need public URLs for the user service agreement and privacy policy.
+
+Target URLs:
+
+- `https://fuyao.site/legal/terms`
+- `https://fuyao.site/legal/privacy`
+
+These pages are static HTML files in:
+
+- `/opt/fuyao-backend/current/backend/static/legal/terms.html`
+- `/opt/fuyao-backend/current/backend/static/legal/privacy.html`
+
+### 9.1 DNS
+
+In the domain console, add A records:
+
+| Type | Host | Value |
+| --- | --- | --- |
+| A | `@` | `<ecs-public-ip>` |
+| A | `www` | `<ecs-public-ip>` |
+
+Wait until DNS resolves:
+
+```bash
+dig +short fuyao.site
+dig +short www.fuyao.site
+```
+
+Both should resolve to the ECS public IP.
+
+### 9.2 Configure Nginx
+
+The final HTTPS config is tracked at:
+
+```bash
+/opt/fuyao-backend/current/backend/deploy/nginx-fuyao.site.conf.example
+```
+
+Because the HTTPS block references a certificate that does not exist before the first certbot run, the safest first-time setup is:
+
+```bash
+sudo tee /etc/nginx/sites-available/fuyao.site > /dev/null <<'EOF'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name fuyao.site www.fuyao.site;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        root /opt/fuyao-backend/current/backend/static;
+        try_files $uri $uri.html =404;
+    }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/fuyao.site \
+  /etc/nginx/sites-enabled/fuyao.site
+
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d fuyao.site -d www.fuyao.site
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+After certbot succeeds, compare `/etc/nginx/sites-available/fuyao.site` with `backend/deploy/nginx-fuyao.site.conf.example` and keep the `/legal/` alias:
+
+```nginx
+location /legal/ {
+    alias /opt/fuyao-backend/current/backend/static/legal/;
+    try_files $uri $uri.html =404;
+}
+```
+
+### 9.3 Verify
+
+```bash
+curl -I https://fuyao.site/legal/privacy
+curl -I https://fuyao.site/legal/terms
+curl https://fuyao.site/legal/privacy
+curl https://fuyao.site/legal/terms
+```
+
+Expected:
+
+- HTTPS returns `200`
+- HTTP redirects to HTTPS after certbot config is active
+- the pages render Chinese legal text
+
+The iOS login agreement links are expected to point to these same public URLs.
