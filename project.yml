@@ -43,8 +43,6 @@ targets:
           - CFBundleURLName: com.fuyao.audiobook
             CFBundleURLSchemes:
               - fuyao
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:

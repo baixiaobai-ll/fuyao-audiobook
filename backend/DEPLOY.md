@@ -133,3 +133,80 @@ If ICP is not finished yet, prefer one of these controlled methods:
 - No formal domain is required at this stage.
 - You can test iOS against `http://<ecs-public-ip>:8787` first, or through a tunnel/proxy if needed.
 - If later adding Nginx, keep the backend process on an internal port like `8787`.
+
+## 8. HTTPS Domain Setup
+
+TestFlight builds should use HTTPS instead of the ECS public IP and development ATS exceptions.
+
+Target endpoint:
+
+- `https://api.fuyao.site`
+- Backend process: `127.0.0.1:8787`
+- Nginx: public `80/443` reverse proxy
+
+### 8.1 DNS
+
+In the domain console, add an A record:
+
+| Type | Host | Value |
+| --- | --- | --- |
+| A | `api` | `<ecs-public-ip>` |
+
+Wait until DNS resolves:
+
+```bash
+dig +short api.fuyao.site
+```
+
+The result should be the ECS public IP.
+
+### 8.2 Install Nginx and Certbot
+
+On ECS:
+
+```bash
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+```
+
+Make sure the cloud security group allows inbound `80` and `443`. Port `8787` can be restricted after Nginx is working.
+
+### 8.3 Configure Nginx
+
+Copy the example config:
+
+```bash
+sudo cp /opt/fuyao-backend/current/backend/deploy/nginx-api.fuyao.site.conf.example \
+  /etc/nginx/sites-available/api.fuyao.site
+
+sudo ln -sf /etc/nginx/sites-available/api.fuyao.site \
+  /etc/nginx/sites-enabled/api.fuyao.site
+```
+
+Before the certificate exists, comment out the HTTPS `server` block or use certbot's automatic Nginx installer. The simplest path is:
+
+```bash
+sudo nginx -t
+sudo certbot --nginx -d api.fuyao.site
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 8.4 Verify HTTPS
+
+```bash
+curl https://api.fuyao.site/healthz
+```
+
+Expected response includes:
+
+- `"ok": true`
+- `"smsProvider": "aliyun"`
+- `"oneClickProvider": "aliyun"`
+
+After this passes, switch the iOS app config:
+
+- `AUTH_API_BASE_URL=https://api.fuyao.site`
+- remove development-only ATS arbitrary loads
