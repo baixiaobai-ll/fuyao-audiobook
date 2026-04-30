@@ -32,6 +32,8 @@ Example:
 
 ```bash
 rsync -av --delete \
+  --exclude 'backend/.env' \
+  --exclude '.DS_Store' \
   /path/to/Desktop/fuyao-backend/ \
   root@<ecs-ip>:/opt/fuyao-backend/current/
 ```
@@ -42,10 +44,13 @@ On the server:
 
 ```bash
 mkdir -p /opt/fuyao-backend/shared
-cp /opt/fuyao-backend/current/backend/.env.example /opt/fuyao-backend/current/backend/.env
+cp /opt/fuyao-backend/current/backend/.env.example /opt/fuyao-backend/shared/backend.env
+nano /opt/fuyao-backend/shared/backend.env
 ```
 
 Then fill in the one-click login and SMS verification fields and point `FUYAO_BACKEND_DB` at `/opt/fuyao-backend/shared/fuyao.sqlite3`.
+
+Production runtime configuration should live in `/opt/fuyao-backend/shared/backend.env`, not in `/opt/fuyao-backend/current/backend/.env`. This keeps real ECS credentials outside the code directory, so later `rsync --delete` deploys will not overwrite Aliyun SMS / one-click login settings with local mock values.
 
 For the current product rule, keep:
 
@@ -88,6 +93,7 @@ Legacy usage compatibility:
 
 ```bash
 cd /opt/fuyao-backend/current
+export FUYAO_ENV_FILE=/opt/fuyao-backend/shared/backend.env
 ./backend/scripts/bootstrap_server.sh
 python3 -m backend.main seed-code [REMOVED_ACTIVATION_CODE] --batch-name initial
 ```

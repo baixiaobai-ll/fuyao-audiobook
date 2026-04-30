@@ -2,7 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${FUYAO_ENV_FILE:-$ROOT_DIR/backend/.env}"
+DEFAULT_SHARED_ENV="/opt/fuyao-backend/shared/backend.env"
+
+if [[ -z "${FUYAO_ENV_FILE:-}" && -f "$DEFAULT_SHARED_ENV" ]]; then
+  ENV_FILE="$DEFAULT_SHARED_ENV"
+else
+  ENV_FILE="${FUYAO_ENV_FILE:-$ROOT_DIR/backend/.env}"
+fi
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a

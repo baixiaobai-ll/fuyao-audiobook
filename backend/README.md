@@ -52,6 +52,15 @@ python3 -m backend.main doctor
 python3 -m backend.main serve --host 127.0.0.1 --port 8787
 ```
 
+## ECS Runtime Env
+
+Keep production ECS configuration outside the synced code directory:
+
+- Local development: `backend/.env`
+- ECS runtime: `/opt/fuyao-backend/shared/backend.env`
+
+The systemd template sets `FUYAO_ENV_FILE=/opt/fuyao-backend/shared/backend.env`. The helper scripts also prefer that shared env file when it exists, so `rsync --delete` deploys will not overwrite Aliyun credentials or switch the server back to mock mode.
+
 ## Routes
 
 - `GET /healthz`
