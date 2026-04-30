@@ -121,25 +121,32 @@ struct NowPlayingView: View {
                 Image("empty_playing")
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(height: 208)
+                    .frame(height: 214)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
+
+                Text("播放列表为空")
+                    .font(.title3.bold())
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
 
                 SurfaceCard {
-                    VStack(spacing: 16) {
-                        TintedIconBadge(icon: "play.circle.fill", size: 44, iconSize: 18)
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .font(.title3)
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [pageBlue, pagePurple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
 
-                        VStack(spacing: 8) {
-                            Text("暂时还没有播放内容")
-                                .font(.title3.bold())
-                                .foregroundStyle(AppTheme.Colors.textPrimary)
-                            Text("从书架选择一本书开始收听，或者在发现页挑一本今晚想听的故事。")
-                                .font(.subheadline)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("小提示")
+                                .font(.subheadline.bold())
+                            Text("从书架中选择一本最想听的故事，然后开始畅游奇幻世界")
+                                .font(.footnote)
                                 .foregroundStyle(AppTheme.Colors.textSecondary)
-                                .multilineTextAlignment(.center)
-                        }
-
-                        HStack(spacing: 10) {
-                            infoPill(title: "支持章节切换", icon: "list.bullet.rectangle")
-                            infoPill(title: "支持定时关闭", icon: "timer")
                         }
                     }
                 }

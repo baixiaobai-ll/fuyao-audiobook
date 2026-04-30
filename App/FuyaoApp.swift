@@ -77,12 +77,15 @@ struct SplashView: View {
     @State private var isReady = false
 
     static let assetNames = [
-            "splash",
-            "splash_alt_1",
-            "splash_alt_2",
-            "splash_sakura",
-            "splash_ink",
-            "splash_cyber"
+        "splash_1",
+        "splash_2",
+        "splash_3",
+        "splash_4",
+        "splash_5",
+        "splash_6",
+        "splash_7",
+        "splash_8",
+        "splash_9"
     ]
 
     static func nextAssetName() -> String {
