@@ -419,18 +419,25 @@ public class AudioBookGenerator {
             return Self.mergeClientMetadata(into: restored, metadata: metadata)
         }
 
-        let analysisResult = try await textAnalyzer.analyze(text: text, metadata: metadata)
-        if let key = remoteCacheKey, Config.discoverAPIBaseURL != nil {
-            if let index = try? PlaybackAnalysisIndexBuilder.makeIndex(
-                bookId: key.bookId,
-                chapterIndex: key.chapterIndex,
-                canonicalText: canonical,
-                result: analysisResult
-            ) {
-                PlaybackAnalysisCloudClient.uploadAnalysisIndexInBackground(index: index)
+        do {
+            let analysisResult = try await textAnalyzer.analyze(text: text, metadata: metadata)
+            if let key = remoteCacheKey, Config.discoverAPIBaseURL != nil {
+                if let index = try? PlaybackAnalysisIndexBuilder.makeIndex(
+                    bookId: key.bookId,
+                    chapterIndex: key.chapterIndex,
+                    canonicalText: canonical,
+                    result: analysisResult
+                ) {
+                    PlaybackAnalysisCloudClient.uploadAnalysisIndexInBackground(index: index)
+                }
             }
+            return analysisResult
+        } catch {
+            print("⚠️ AI 分析链路失败，已切换为旁白兜底播放：\(error.localizedDescription)")
+            let fallback = NovelTextAnalyzer.makeNarrationFallbackResult(text: text, metadata: metadata)
+            print("✅ 旁白兜底分析完成: \(fallback.segments.count) 个旁白片段，不上传云端分析索引")
+            return fallback
         }
-        return analysisResult
     }
 
     private func prepareVoiceAssignments(

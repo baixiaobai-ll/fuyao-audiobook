@@ -26,6 +26,9 @@ struct FuyaoApp: App {
                 }
             }
             .onAppear {
+                #if DEBUG
+                ConfigHelper.printAIConfigurationDiagnostics()
+                #endif
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     withAnimation(.easeOut(duration: 0.6)) {
                         showSplash = false

@@ -22,6 +22,18 @@ struct NowPlayingView: View {
     private let pagePurple = Color(red: 0.66, green: 0.54, blue: 0.96)
     private let pageIndigo = Color(red: 0.35, green: 0.45, blue: 0.82)
 
+    private var displayChapterContext: PlaybackChapterContext? {
+        player.displayChapterContextOverride ?? player.currentPlaylist?.chapterContext
+    }
+
+    private var isShowingNextChapterPlaceholder: Bool {
+        player.displayChapterContextOverride != nil
+    }
+
+    private var displayProgress: PlaybackProgress {
+        isShowingNextChapterPlaceholder ? PlaybackProgress() : player.progress
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -244,7 +256,7 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private var artworkButton: some View {
-        if let ctx = player.currentPlaylist?.chapterContext {
+        if let ctx = displayChapterContext {
             Button(action: { contentMode = .text }) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -350,11 +362,11 @@ struct NowPlayingView: View {
             VStack(spacing: 14) {
                 VStack(spacing: 6) {
                     HStack {
-                        Text("\(Int((isDragging ? draggedPercentage : player.progress.percentage).rounded()))%")
+                        Text("\(Int((isDragging ? draggedPercentage : displayProgress.percentage).rounded()))%")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(pageIndigo)
                         Spacer()
-                        Text(isDragging ? "松手后跳转" : "拖动可快进快退")
+                        Text(isShowingNextChapterPlaceholder ? "正在准备下一章" : (isDragging ? "松手后跳转" : "拖动可快进快退"))
                             .font(.caption)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -370,20 +382,23 @@ struct NowPlayingView: View {
                         in: 0...safeMaxDuration,
                         onEditingChanged: { editing in
                             if !editing {
-                                player.seekToAggregatedTime(dragValue)
+                                if !isShowingNextChapterPlaceholder {
+                                    player.seekToAggregatedTime(dragValue)
+                                }
                                 isDragging = false
                             }
                         }
                     )
                     .tint(pagePurple)
+                    .disabled(isShowingNextChapterPlaceholder)
 
                     HStack {
-                        Text(formatTime(isDragging ? dragValue : player.progress.currentTime))
+                        Text(formatTime(isDragging ? dragValue : displayProgress.currentTime))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                             .monospacedDigit()
                         Spacer()
-                        Text(formatTime(player.progress.duration))
+                        Text(formatTime(displayProgress.duration))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                             .monospacedDigit()
@@ -394,7 +409,7 @@ struct NowPlayingView: View {
                     playerCircleButton(
                         icon: "backward.fill",
                         size: 52,
-                        enabled: !isSwitchingChapter && chapterNavBackwardEnabled(),
+                        enabled: !isSwitchingChapter && !isShowingNextChapterPlaceholder && chapterNavBackwardEnabled(),
                         filled: false
                     ) {
                         goBackward()
@@ -429,11 +444,12 @@ struct NowPlayingView: View {
                         .shadow(color: pagePurple.opacity(0.22), radius: 12, x: 0, y: 5)
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.95))
+                    .disabled(isShowingNextChapterPlaceholder)
 
                     playerCircleButton(
                         icon: "forward.fill",
                         size: 52,
-                        enabled: !isSwitchingChapter && chapterNavForwardEnabled(),
+                        enabled: !isSwitchingChapter && !isShowingNextChapterPlaceholder && chapterNavForwardEnabled(),
                         filled: false
                     ) {
                         goForward()
@@ -455,7 +471,7 @@ struct NowPlayingView: View {
             }
 
             actionPanelButton(
-                title: player.currentPlaylist?.chapterContext != nil ? "章节目录" : "播放列表",
+                title: displayChapterContext != nil ? "章节目录" : "播放列表",
                 subtitle: "快速跳转",
                 icon: "list.bullet",
                 active: showPlaylist
@@ -490,11 +506,11 @@ struct NowPlayingView: View {
     // MARK: - Playback Text Helpers
 
     private var currentBookTitle: String {
-        player.currentPlaylist?.chapterContext?.bookTitle ?? "当前书籍"
+        displayChapterContext?.bookTitle ?? "当前书籍"
     }
 
     private var currentPrimaryTitle: String {
-        if let ctx = player.currentPlaylist?.chapterContext {
+        if let ctx = displayChapterContext {
             return currentChapterTitle(from: ctx)
         }
         return player.currentPlaylist?.title ?? "暂无标题"
@@ -509,14 +525,14 @@ struct NowPlayingView: View {
     }
 
     private var playbackSubtitle: String {
-        if let ctx = player.currentPlaylist?.chapterContext {
+        if let ctx = displayChapterContext {
             return "正在收听《\(ctx.bookTitle)》中的章节内容，切换目录后会自动续播。"
         }
         return "当前正在播放合成好的音频内容。"
     }
 
     private var remainingTimeForDisplay: TimeInterval {
-        max(0, player.progress.duration - (isDragging ? dragValue : player.progress.currentTime))
+        max(0, displayProgress.duration - (isDragging ? dragValue : displayProgress.currentTime))
     }
 
     private var draggedPercentage: Double {
@@ -633,7 +649,7 @@ struct NowPlayingView: View {
     }
 
     private var currentChapterContentKey: String {
-        guard let ctx = player.currentPlaylist?.chapterContext else { return "none" }
+        guard let ctx = displayChapterContext else { return "none" }
         return "\(ctx.shelfBookId.uuidString)-\(ctx.currentChapterIndex)"
     }
 
@@ -643,7 +659,7 @@ struct NowPlayingView: View {
     }
 
     private func loadInlineChapterText() {
-        guard let ctx = player.currentPlaylist?.chapterContext else { return }
+        guard let ctx = displayChapterContext else { return }
         guard let book = resolvedBook(for: ctx) else { return }
         let summary = ctx.chapters.first(where: { $0.index == ctx.currentChapterIndex })
         let chapterTitle = summary?.title ?? (player.currentPlaylist?.title ?? "正文")
@@ -684,15 +700,15 @@ struct NowPlayingView: View {
     // MARK: - Progress
 
     private var safeMaxDuration: Double {
-        let d = player.progress.duration
+        let d = displayProgress.duration
         return d.isFinite && d > 0 ? d : 1
     }
 
     private var sliderValue: Double {
-        guard player.progress.duration > 0,
-              player.progress.currentTime.isFinite,
-              player.progress.duration.isFinite else { return 0 }
-        return min(player.progress.currentTime, safeMaxDuration)
+        guard displayProgress.duration > 0,
+              displayProgress.currentTime.isFinite,
+              displayProgress.duration.isFinite else { return 0 }
+        return min(displayProgress.currentTime, safeMaxDuration)
     }
 
     // MARK: - Controls
@@ -777,7 +793,7 @@ struct NowPlayingView: View {
 
                 ScrollView {
                     VStack(spacing: 12) {
-                        if let ctx = player.currentPlaylist?.chapterContext, !ctx.chapters.isEmpty {
+                        if let ctx = displayChapterContext, !ctx.chapters.isEmpty {
                             ForEach(ctx.chapters, id: \.index) { summary in
                                 playlistRow(
                                     title: summary.title,
@@ -802,7 +818,7 @@ struct NowPlayingView: View {
                     .padding(.vertical, 16)
                 }
             }
-            .navigationTitle(player.currentPlaylist?.chapterContext != nil ? "章节目录" : "播放列表")
+            .navigationTitle(displayChapterContext != nil ? "章节目录" : "播放列表")
             .navigationBarTitleDisplayMode(.inline)
             .tint(pageIndigo)
             .toolbar {

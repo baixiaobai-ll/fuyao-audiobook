@@ -220,7 +220,7 @@ final class KimiAnalysisService: AIAnalysisService {
     }
 }
 
-/// Kimi 优先；**仅当** Kimi 出现 120s 超时时立即改调通义 `qwen3.6-plus`，不再对 Kimi 做第 2、3 次重试。
+/// Kimi 优先；Kimi 任意分析失败时立即改调通义 `qwen3.6-plus`，不再对 Kimi 做第 2、3 次重试。
 final class KimiThenQwenFallbackAnalysisService: AIAnalysisService {
     let provider: AIProvider = .kimi
     private let kimi: KimiAnalysisService
@@ -256,17 +256,35 @@ final class KimiThenQwenFallbackAnalysisService: AIAnalysisService {
         do {
             return try await kimi.analyze(prompt: prompt)
         } catch let error as AnalysisError {
+            let reason: String
             if case .requestTimedOut = error {
+                reason = "120s 超时"
                 print("⏱️ Kimi 分析 120s 超时，已跳过剩余 Kimi 重试，改调通义千问 qwen3.6-plus …")
-                guard let qwen else {
-                    throw AnalysisError.apiError(
-                        "Kimi 分析超时，且未配置通义千问 API Key。请在环境变量、Keychain 或 Config.plist 中设置 QWEN_API_KEY 或 DASHSCOPE_API_KEY 以自动降级。"
-                    )
-                }
-                let out = try await qwen.analyze(prompt: prompt)
-                print("✅ 通义千问 qwen3.6-plus 已接替完成本段分析（Kimi 120s 超时后降级）")
-                return out
+            } else {
+                reason = "失败"
+                print("⚠️ Kimi 分析失败，已跳过 Kimi 重试，改调通义千问 qwen3.6-plus：\(error.localizedDescription)")
             }
+            return try await analyzeWithQwen(prompt: prompt, kimiFailureReason: reason)
+        } catch {
+            print("⚠️ Kimi 分析请求异常，已跳过 Kimi 重试，改调通义千问 qwen3.6-plus：\(error.localizedDescription)")
+            return try await analyzeWithQwen(prompt: prompt, kimiFailureReason: "请求异常")
+        }
+    }
+
+    private func analyzeWithQwen(prompt: String, kimiFailureReason: String) async throws -> String {
+        guard let qwen else {
+            print("⚠️ 未配置通义千问 Qwen API Key，本段将交由旁白兜底。")
+            throw AnalysisError.apiError(
+                "Kimi 分析\(kimiFailureReason)，且未配置通义千问 API Key。将自动降级为旁白播放。"
+            )
+        }
+
+        do {
+            let out = try await qwen.analyze(prompt: prompt)
+            print("✅ 通义千问 qwen3.6-plus 已接替完成本段分析（Kimi \(kimiFailureReason)后降级）")
+            return out
+        } catch {
+            print("⚠️ 通义千问 qwen3.6-plus 分析失败，本段将交由旁白兜底：\(error.localizedDescription)")
             throw error
         }
     }

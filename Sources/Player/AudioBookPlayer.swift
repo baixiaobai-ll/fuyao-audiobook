@@ -24,6 +24,9 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     @Published public var config: PlaybackConfig = PlaybackConfig()
     @Published public var sleepTimerRemaining: TimeInterval? = nil
     @Published public private(set) var lastErrorMessage: String?
+    /// App 内播放页专用的章节占位状态。自动切到下一章生成音频时，
+    /// 播放页先展示下一章标题与 0 进度；锁屏/实时活动仍走既有系统媒体链路。
+    @Published public private(set) var displayChapterContextOverride: PlaybackChapterContext?
 
     // MARK: - Private Properties
 
@@ -75,6 +78,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 加载播放列表
     public func load(playlist: Playlist) {
+        let shouldStartFromBeginning = isAdvancingToNextChapter || displayChapterContextOverride != nil
+        displayChapterContextOverride = nil
         currentPlaylist = playlist
         state = .idle
         lastErrorMessage = nil
@@ -84,7 +89,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         var restoredItemIndex = playlist.currentIndex
 
         // 尝试恢复上次播放位置
-        if let session = sessionManager.loadSession(for: playlist) {
+        if !shouldStartFromBeginning, let session = sessionManager.loadSession(for: playlist) {
             let clampedIndex = min(max(session.currentItemIndex, 0), max(playlist.items.count - 1, 0))
             currentPlaylist?.currentIndex = clampedIndex
             restoredTime = max(0, session.currentTime)
@@ -168,6 +173,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
     }
 
     func presentPlaybackError(_ error: Error) {
+        displayChapterContextOverride = nil
         lastErrorMessage = userFacingMessage(for: error)
         state = .error
         publishNowPlayingInfoCenter()
@@ -225,6 +231,7 @@ public class AudioBookPlayer: NSObject, ObservableObject {
 
     /// 停止
     public func stop() {
+        displayChapterContextOverride = nil
         cleanupPlayer()
         state = .stopped
         progress = PlaybackProgress()
@@ -1082,6 +1089,8 @@ public class AudioBookPlayer: NSObject, ObservableObject {
         }
 
         isAdvancingToNextChapter = true
+        displayChapterContextOverride = nextChapterDisplayContext()
+        progress = PlaybackProgress()
         cleanupPlayer()
         state = .loading
         publishNowPlayingInfoCenter()
@@ -1092,10 +1101,22 @@ public class AudioBookPlayer: NSObject, ObservableObject {
                 try await handler()
             } catch {
                 self.isAdvancingToNextChapter = false
+                self.displayChapterContextOverride = nil
                 self.presentPlaybackError(error)
                 print("❌ 自动切换下一章失败: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func nextChapterDisplayContext() -> PlaybackChapterContext? {
+        guard var context = currentPlaylist?.chapterContext,
+              let currentPosition = context.chapters.firstIndex(where: { $0.index == context.currentChapterIndex }),
+              currentPosition + 1 < context.chapters.count else {
+            return nil
+        }
+
+        context.currentChapterIndex = context.chapters[currentPosition + 1].index
+        return context
     }
 
     private func userFacingMessage(for error: Error) -> String {

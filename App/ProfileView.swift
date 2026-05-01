@@ -101,7 +101,7 @@ struct ProfileView: View {
             .tint(pageIndigo)
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showLogoutConfirm)
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: showActivationSheet)
-            .animation(.spring(response: 0.22, dampingFraction: 0.9), value: showNicknameEdit)
+            .animation(.easeOut(duration: 0.12), value: showNicknameEdit)
             .onAppear {
                 calculateCacheSizes()
             }
@@ -212,7 +212,7 @@ struct ProfileView: View {
                         actionEntryRow(
                             icon: "arrow.clockwise.circle.fill",
                             title: "重新提交激活码",
-                            subtitle: "如需更换激活码，可再次提交，以后端真实返回为准"
+                            subtitle: "如需更换激活码，可再次提交"
                         )
                     }
                     .buttonStyle(LiftPressButtonStyle(scale: 0.985))
@@ -526,11 +526,6 @@ struct ProfileView: View {
             )
             .padding(.horizontal, 28)
         }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                nicknameFieldFocused = true
-            }
-        }
     }
 
     private func presentNicknameEditor() {
@@ -541,8 +536,8 @@ struct ProfileView: View {
 
     private func dismissNicknameEditor() {
         guard !isSavingNickname else { return }
-        nicknameFieldFocused = false
         showNicknameEdit = false
+        nicknameFieldFocused = false
         nicknameEditError = nil
     }
 

@@ -532,4 +532,29 @@ class ConfigHelper {
         print("   章末后台预合成下一章: \(Config.prefetchEntireNextChapterWhenCurrentReady)")
         print("   下一章预取进度阈值: \(String(format: "%.0f%%", Config.chapterPrefetchProgressThreshold * 100))（实际会按段数/并发微调）")
     }
+
+    #if DEBUG
+    /// Debug 专用：只打印配置是否存在和长度，绝不输出密钥明文。
+    static func printAIConfigurationDiagnostics() {
+        print("[AIConfig] AI_PROVIDER=\(Config.aiProvider.rawValue)")
+        print("[AIConfig] AI_MODEL=\(Config.aiModel)")
+        print("[AIConfig] AI_BASE_URL=\(Config.aiBaseURL ?? "nil")")
+        print("[AIConfig] DASHSCOPE_BASE_URL=\(Config.qwenDashScopeCompatibleBaseURL)")
+        for key in ["KIMI_API_KEY", "MOONSHOT_API_KEY", "AI_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY"] {
+            let value = ProcessInfo.processInfo.environment[key]
+                ?? KeychainManager.load(key: key)
+                ?? Self.loadDiagnosticPlistValue(key: key)
+            let state = value.map { "configured length=\($0.count)" } ?? "missing"
+            print("[AIConfig] \(key)=\(state)")
+        }
+    }
+
+    private static func loadDiagnosticPlistValue(key: String) -> String? {
+        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+              let config = NSDictionary(contentsOfFile: path) else {
+            return nil
+        }
+        return config[key] as? String
+    }
+    #endif
 }

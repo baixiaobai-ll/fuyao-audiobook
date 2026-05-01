@@ -345,6 +345,31 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     ///   走 `narrationVoice` 路径，使用书籍配音方案里的旁白音色。
     /// - characters / scenes 留空，不会污染跨 chunk 的角色合并表与场景表。
     private func makeNarrationFallbackChunk(originalText: String) -> ChunkAnalysisResult {
+        Self.makeNarrationFallbackChunkResult(originalText: originalText)
+    }
+
+    /// AI 服务链路整体不可用时的整章兜底：不走角色识别，只生成旁白片段，保证播放不中断。
+    static func makeNarrationFallbackResult(text: String, metadata: NovelMetadata?) -> AnalysisResult {
+        let chunk = makeNarrationFallbackChunkResult(originalText: text)
+        return AnalysisResult(
+            segments: chunk.segments,
+            characters: [],
+            scenes: chunk.scenes,
+            metadata: metadata ?? makeFallbackMetadata(from: text)
+        )
+    }
+
+    private static func makeFallbackMetadata(from text: String) -> NovelMetadata {
+        let wordCount = text.count
+        let estimatedMinutes = Double(wordCount) / 300.0
+        return NovelMetadata(
+            title: "未命名小说",
+            wordCount: wordCount,
+            estimatedDuration: estimatedMinutes * 60.0
+        )
+    }
+
+    private static func makeNarrationFallbackChunkResult(originalText: String) -> ChunkAnalysisResult {
         let pieces = splitTextForNarrationFallback(originalText)
         let fallbackScene = NovelScene(type: .peaceful, description: "未识别段落", intensity: 0.4)
         let segments: [TextSegment] = pieces.enumerated().map { index, text in
@@ -366,7 +391,7 @@ class NovelTextAnalyzer: TextAnalyzerProtocol, @unchecked Sendable {
     }
 
     /// 按段落 / 句号软切，单段最大 200 字。
-    private func splitTextForNarrationFallback(_ text: String) -> [String] {
+    private static func splitTextForNarrationFallback(_ text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
