@@ -47,7 +47,7 @@ Legacy `send-code/login` endpoints remain in the codebase as fallback tooling, b
 ```bash
 cp backend/.env.example backend/.env
 python3 -m backend.main init-db
-python3 -m backend.main seed-code [REMOVED_ACTIVATION_CODE] --batch-name initial
+python3 -m backend.main generate-codes --count 5 --batch-name initial
 python3 -m backend.main doctor
 python3 -m backend.main serve --host 127.0.0.1 --port 8787
 ```
@@ -86,9 +86,26 @@ Daily quota is now legacy compatibility only. The backend keeps quota-related fi
 ```bash
 python3 -m backend.main init-db
 python3 -m backend.main doctor
-python3 -m backend.main seed-code [REMOVED_ACTIVATION_CODE] --batch-name initial
+python3 -m backend.main generate-codes --count 20 --batch-name beta-001
+python3 -m backend.main seed-code FY-ABCD-EFGH-JKLM-NP --batch-name manual
 python3 -m backend.main serve --host 0.0.0.0 --port 8787
 ```
+
+## Activation Codes
+
+Use `generate-codes` for real test or beta batches:
+
+```bash
+python3 -m backend.main generate-codes --count 20 --batch-name beta-001
+```
+
+Generated codes use the format `FY-XXXX-XXXX-XXXX-CC`:
+
+- `FY`: configurable prefix, defaults to `FY`
+- `XXXX-XXXX-XXXX`: random payload using uppercase letters and digits without easy-to-confuse characters
+- `CC`: checksum characters for basic typo resistance
+
+`seed-code` is still available for manually inserting one known code, but generated codes are preferred for any user-facing distribution.
 
 ## One-Click Login Flow
 

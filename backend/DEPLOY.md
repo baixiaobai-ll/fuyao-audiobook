@@ -95,7 +95,7 @@ Legacy usage compatibility:
 cd /opt/fuyao-backend/current
 export FUYAO_ENV_FILE=/opt/fuyao-backend/shared/backend.env
 ./backend/scripts/bootstrap_server.sh
-python3 -m backend.main seed-code [REMOVED_ACTIVATION_CODE] --batch-name initial
+python3 -m backend.main generate-codes --count 20 --batch-name beta-001
 ```
 
 ## 5. Start Service

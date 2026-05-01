@@ -24,6 +24,10 @@ from .sms import SmsProvider, SmsSendError, SmsVerifyError, build_sms_provider
 
 
 PHONE_RE = re.compile(r"^1\d{10}$")
+ACTIVATION_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+ACTIVATION_CODE_PAYLOAD_LENGTH = 12
+ACTIVATION_CODE_CHECKSUM_LENGTH = 2
+GENERATED_ACTIVATION_CODE_RE = re.compile(r"^([A-Z0-9]{1,6})-([A-Z0-9]{4})-([A-Z0-9]{4})-([A-Z0-9]{4})-([A-Z0-9]{2})$")
 
 
 class ApiError(Exception):
@@ -60,6 +64,43 @@ def day_key(config: AppConfig, when: datetime | None = None) -> str:
 def random_code(length: int = 6) -> str:
     upper = min(max(length, 4), 8)
     return f"{secrets.randbelow(10 ** upper):0{upper}d}"
+
+
+def normalize_activation_code(value: str) -> str:
+    return re.sub(r"\s+", "", value).upper()
+
+
+def activation_code_checksum(payload: str, length: int = ACTIVATION_CODE_CHECKSUM_LENGTH) -> str:
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big")
+    chars: list[str] = []
+    base = len(ACTIVATION_CODE_ALPHABET)
+    for _ in range(length):
+        chars.append(ACTIVATION_CODE_ALPHABET[value % base])
+        value //= base
+    return "".join(chars)
+
+
+def format_activation_code(prefix: str, payload: str, checksum: str) -> str:
+    groups = [payload[i : i + 4] for i in range(0, len(payload), 4)]
+    return "-".join([prefix, *groups, checksum])
+
+
+def generate_activation_code(prefix: str = "FY") -> str:
+    clean_prefix = re.sub(r"[^A-Z0-9]", "", prefix.upper())[:6] or "FY"
+    payload = "".join(secrets.choice(ACTIVATION_CODE_ALPHABET) for _ in range(ACTIVATION_CODE_PAYLOAD_LENGTH))
+    checksum = activation_code_checksum(f"{clean_prefix}-{payload}")
+    return format_activation_code(clean_prefix, payload, checksum)
+
+
+def generated_activation_code_has_valid_checksum(code: str) -> bool | None:
+    match = GENERATED_ACTIVATION_CODE_RE.fullmatch(code)
+    if not match:
+        return None
+    prefix = match.group(1)
+    payload = "".join(match.group(i) for i in range(2, 5))
+    checksum = match.group(5)
+    return activation_code_checksum(f"{prefix}-{payload}") == checksum
 
 
 def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -572,9 +613,12 @@ class FuyaoBackendApp:
     def handle_activation_redeem(self, handler: BaseHTTPRequestHandler) -> None:
         session = self.authenticate(handler, required=True)
         payload = read_json(handler)
-        code = str(payload.get("code", "")).strip().upper()
+        code = normalize_activation_code(str(payload.get("code", "")))
         if not code:
             raise ApiError(400, "invalid_activation_code", "Activation code is required.")
+        checksum_valid = generated_activation_code_has_valid_checksum(code)
+        if checksum_valid is False:
+            raise ApiError(400, "invalid_activation_code", "Activation code checksum is invalid.")
 
         now = iso_now()
         with self.db.transaction() as conn:
@@ -857,25 +901,60 @@ def build_server(config: AppConfig) -> ThreadingHTTPServer:
     return ThreadingHTTPServer((config.host, config.port), ApiHandler)
 
 
-def seed_activation_code(config: AppConfig, code: str, batch_name: str, expires_at: str | None) -> None:
+def insert_activation_code(config: AppConfig, code: str, batch_name: str, expires_at: str | None) -> bool:
+    normalized = normalize_activation_code(code)
     db = Database(config.db_path)
     db.initialize()
     with db.transaction() as conn:
         existing = conn.execute(
             "SELECT id FROM activation_codes WHERE code = ?",
-            (code.upper(),),
+            (normalized,),
         ).fetchone()
         if existing:
-            print(f"activation code already exists: {code.upper()}")
-            return
+            return False
         conn.execute(
             """
             INSERT INTO activation_codes (code, batch_name, status, expires_at, created_at)
             VALUES (?, ?, 'new', ?, ?)
             """,
-            (code.upper(), batch_name, expires_at, iso_now()),
+            (normalized, batch_name, expires_at, iso_now()),
         )
-    print(f"seeded activation code: {code.upper()}")
+    return True
+
+
+def seed_activation_code(config: AppConfig, code: str, batch_name: str, expires_at: str | None) -> None:
+    normalized = normalize_activation_code(code)
+    if insert_activation_code(config, normalized, batch_name, expires_at):
+        print(f"seeded activation code: {normalized}")
+    else:
+        print(f"activation code already exists: {normalized}")
+
+
+def generate_activation_codes(
+    config: AppConfig,
+    count: int,
+    batch_name: str,
+    expires_at: str | None,
+    prefix: str,
+) -> None:
+    if count < 1 or count > 1000:
+        raise SystemExit("--count must be between 1 and 1000")
+
+    created: list[str] = []
+    attempts = 0
+    max_attempts = count * 5
+    while len(created) < count and attempts < max_attempts:
+        attempts += 1
+        code = generate_activation_code(prefix=prefix)
+        if insert_activation_code(config, code, batch_name, expires_at):
+            created.append(code)
+
+    if len(created) != count:
+        raise SystemExit(f"only generated {len(created)} activation codes after {attempts} attempts")
+
+    print(f"generated {len(created)} activation codes:")
+    for code in created:
+        print(code)
 
 
 def doctor(config: AppConfig) -> None:
@@ -914,6 +993,12 @@ def main() -> None:
     seed_parser.add_argument("--batch-name", default="manual")
     seed_parser.add_argument("--expires-at")
 
+    generate_parser = subparsers.add_parser("generate-codes", help="Generate activation codes")
+    generate_parser.add_argument("--count", type=int, default=1)
+    generate_parser.add_argument("--batch-name", default="generated")
+    generate_parser.add_argument("--expires-at")
+    generate_parser.add_argument("--prefix", default="FY")
+
     args = parser.parse_args()
     config = load_config()
 
@@ -928,6 +1013,10 @@ def main() -> None:
 
     if args.command == "seed-code":
         seed_activation_code(config, args.code, args.batch_name, args.expires_at)
+        return
+
+    if args.command == "generate-codes":
+        generate_activation_codes(config, args.count, args.batch_name, args.expires_at, args.prefix)
         return
 
     if args.command in (None, "serve"):
