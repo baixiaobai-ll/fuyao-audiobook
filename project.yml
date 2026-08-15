@@ -23,8 +23,6 @@ targets:
       - path: Resources
       - path: App/Assets.xcassets
       - path: Config.plist
-      - path: Vendor/NumberAuthSDK/Resources/ATAuthSDK.bundle
-        type: folder
     dependencies:
       - sdk: SwiftUI.framework
       - sdk: AVFoundation.framework
@@ -32,9 +30,6 @@ targets:
       - sdk: Network.framework
       - sdk: WebKit.framework
       - sdk: MediaPlayer.framework
-      - framework: Vendor/NumberAuthSDK/ATAuthSDK.xcframework
-      - framework: Vendor/NumberAuthSDK/YTXOperators.xcframework
-      - framework: Vendor/NumberAuthSDK/YTXMonitor.xcframework
     info:
       path: App/Info.plist
       properties:
@@ -65,19 +60,6 @@ targets:
       CODE_SIGN_STYLE: Automatic
       DEVELOPMENT_TEAM: ""
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
-    postBuildScripts:
-      - name: Copy ATAuthSDK Bundle
-        script: |
-          set -euo pipefail
-          SRC="${PROJECT_DIR}/Vendor/NumberAuthSDK/Resources/ATAuthSDK.bundle"
-          DST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ATAuthSDK.bundle"
-          if [ -d "$SRC" ]; then
-            rm -rf "$DST"
-            mkdir -p "$(dirname "$DST")"
-            cp -R "$SRC" "$DST"
-          else
-            echo "warning: ATAuthSDK.bundle not found at $SRC"
-          fi
     attributes:
       SystemCapabilities:
         com.apple.BackgroundModes:

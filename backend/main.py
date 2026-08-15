@@ -966,6 +966,7 @@ def doctor(config: AppConfig) -> None:
         masked_access_key = f"{config.aliyun_access_key_id[:4]}...{config.aliyun_access_key_id[-4:]}"
     summary = {
         "ok": True,
+        "environment": config.environment,
         "dbPath": str(config.db_path),
         "host": config.host,
         "port": config.port,

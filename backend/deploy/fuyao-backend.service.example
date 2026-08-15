@@ -6,10 +6,18 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/fuyao-backend/current
 Environment=FUYAO_ENV_FILE=/opt/fuyao-backend/shared/backend.env
-ExecStart=/usr/bin/python3 -m backend.main serve --host 0.0.0.0 --port 8787
+Environment=FUYAO_ENVIRONMENT=production
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m backend.main serve --host 127.0.0.1 --port 8787
 Restart=always
 RestartSec=3
-User=root
+User=fuyao
+Group=fuyao
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fuyao-backend/shared
 StandardOutput=journal
 StandardError=journal
 

@@ -54,6 +54,7 @@ def _env_json_dict(name: str) -> dict[str, str]:
 class AppConfig:
     root_dir: Path
     db_path: Path
+    environment: str
     host: str
     port: int
     timezone_name: str
@@ -87,6 +88,25 @@ class AppConfig:
     aliyun_http_timeout_seconds: int
 
 
+def _validate_runtime_config(config: AppConfig) -> None:
+    allowed_environments = {"development", "test", "staging", "production"}
+    if config.environment not in allowed_environments:
+        allowed = ", ".join(sorted(allowed_environments))
+        raise ValueError(f"FUYAO_ENVIRONMENT must be one of: {allowed}")
+
+    if config.environment in {"staging", "production"}:
+        mock_providers = []
+        if config.one_click_provider == "mock":
+            mock_providers.append("FUYAO_ONE_CLICK_PROVIDER")
+        if config.sms_provider == "mock":
+            mock_providers.append("FUYAO_SMS_PROVIDER")
+        if mock_providers:
+            joined = ", ".join(mock_providers)
+            raise ValueError(
+                f"mock authentication is disabled in {config.environment}: {joined}"
+            )
+
+
 def load_config() -> AppConfig:
     _load_env_file()
 
@@ -97,9 +117,10 @@ def load_config() -> AppConfig:
     sms_code_ttl_seconds = _env_int("FUYAO_SMS_CODE_TTL_SECONDS", 300)
     sms_resend_seconds = _env_int("FUYAO_SMS_RESEND_SECONDS", 60)
 
-    return AppConfig(
+    config = AppConfig(
         root_dir=root_dir,
         db_path=db_path,
+        environment=os.getenv("FUYAO_ENVIRONMENT", "development").strip().lower(),
         host=os.getenv("FUYAO_BACKEND_HOST", "127.0.0.1"),
         port=_env_int("FUYAO_BACKEND_PORT", 8787),
         timezone_name=os.getenv("FUYAO_TIMEZONE", "Asia/Shanghai"),
@@ -135,3 +156,5 @@ def load_config() -> AppConfig:
         aliyun_sms_return_verify_code=_env_bool("FUYAO_ALIYUN_SMS_RETURN_VERIFY_CODE", False),
         aliyun_http_timeout_seconds=_env_int("FUYAO_ALIYUN_HTTP_TIMEOUT_SECONDS", 10),
     )
+    _validate_runtime_config(config)
+    return config

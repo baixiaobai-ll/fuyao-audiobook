@@ -7,9 +7,9 @@ Deploy the backend to an Aliyun ECS server for controlled integration testing be
 Current recommendation:
 
 - Run the backend on ECS directly
-- Bind to `0.0.0.0`
-- Access it with the ECS public IP and port, or via SSH tunnel / private network
-- Limit access by security group source IP while the service is still in controlled testing
+- Bind the Python process to `127.0.0.1:8787`
+- Expose only Nginx on public ports `80/443`
+- Keep ECS security-group access to `8787` closed
 
 ## 1. Prepare Server
 
@@ -34,8 +34,8 @@ Example:
 rsync -av --delete \
   --exclude 'backend/.env' \
   --exclude '.DS_Store' \
-  /path/to/Desktop/fuyao-backend/ \
-  root@<ecs-ip>:/opt/fuyao-backend/current/
+  <local-repo-path>/ \
+  <deploy-user>@<ecs-ip>:/opt/fuyao-backend/current/
 ```
 
 ## 3. Create Env File
@@ -49,6 +49,8 @@ nano /opt/fuyao-backend/shared/backend.env
 ```
 
 Then fill in the one-click login and SMS verification fields and point `FUYAO_BACKEND_DB` at `/opt/fuyao-backend/shared/fuyao.sqlite3`.
+
+Keep `FUYAO_ENVIRONMENT=production`. The backend deliberately refuses to start with mock authentication providers in staging or production.
 
 Production runtime configuration should live in `/opt/fuyao-backend/shared/backend.env`, not in `/opt/fuyao-backend/current/backend/.env`. This keeps real ECS credentials outside the code directory, so later `rsync --delete` deploys will not overwrite Aliyun SMS / one-click login settings with local mock values.
 
@@ -119,20 +121,15 @@ sudo systemctl status fuyao-backend
 
 ```bash
 curl http://127.0.0.1:8787/healthz
-curl http://<ecs-public-ip>:8787/healthz
 ```
 
-If ICP is not finished yet, prefer one of these controlled methods:
-
-- security group allowlist only your office/home IP
-- SSH tunnel to the ECS host
-- VPN / private network access
+For controlled testing before HTTPS is ready, use an SSH tunnel or a private network. Do not expose port `8787` directly to the internet.
 
 ## 7. Notes
 
 - No formal domain is required at this stage.
-- You can test iOS against `http://<ecs-public-ip>:8787` first, or through a tunnel/proxy if needed.
-- If later adding Nginx, keep the backend process on an internal port like `8787`.
+- Test through a tunnel or reverse proxy if needed.
+- Keep the backend process on loopback and an internal port such as `8787`.
 
 ## 8. HTTPS Domain Setup
 

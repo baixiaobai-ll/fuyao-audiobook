@@ -45,7 +45,7 @@ Legacy `send-code/login` endpoints remain in the codebase as fallback tooling, b
 ## Start Locally
 
 ```bash
-cp backend/.env.example backend/.env
+cp backend/.env.development.example backend/.env
 python3 -m backend.main init-db
 python3 -m backend.main generate-codes --count 5 --batch-name initial
 python3 -m backend.main doctor
@@ -60,6 +60,8 @@ Keep production ECS configuration outside the synced code directory:
 - ECS runtime: `/opt/fuyao-backend/shared/backend.env`
 
 The systemd template sets `FUYAO_ENV_FILE=/opt/fuyao-backend/shared/backend.env`. The helper scripts also prefer that shared env file when it exists, so `rsync --delete` deploys will not overwrite Aliyun credentials or switch the server back to mock mode.
+
+The systemd unit also sets `FUYAO_ENVIRONMENT=production`. In `staging` and `production`, startup fails if either authentication provider is configured as `mock`.
 
 ## Routes
 
@@ -88,7 +90,7 @@ python3 -m backend.main init-db
 python3 -m backend.main doctor
 python3 -m backend.main generate-codes --count 20 --batch-name beta-001
 python3 -m backend.main seed-code FY-ABCD-EFGH-JKLM-NP --batch-name manual
-python3 -m backend.main serve --host 0.0.0.0 --port 8787
+python3 -m backend.main serve --host 127.0.0.1 --port 8787
 ```
 
 ## Activation Codes

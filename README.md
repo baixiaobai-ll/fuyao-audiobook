@@ -36,16 +36,26 @@ project.yml          # iOS 工程定义
 Package.swift        # 共享库构建描述（仅检查 Sources）
 ```
 
+## 第三方 SDK
+
+仓库不分发阿里云号码认证等闭源二进制 SDK。默认工程可以在不包含该 SDK 的情况下构建，并使用验证码等后备登录方式。
+
+如需启用运营商一键登录，请从服务商官方渠道获取兼容版本，阅读并遵守其许可条款，再在本地 Xcode 工程中完成集成。不要把下载得到的 `xcframework`、资源包或示例压缩包提交到仓库。
+
 ## 运行方式
 
 ### 方式 1：在 Xcode 中运行 App
 
 这是推荐方式，也是“扶摇”当前的主要开发路径。
 
-1. 用 Xcode 打开已生成的 iOS 工程
-2. 配置 `Config.plist` 或环境变量中的 API 密钥
-3. 选择模拟器或真机
-4. 运行并测试“书架 / 发现 / 播放 / 我的”四个主页面
+1. 安装 [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+2. 运行 `cp Config.plist.template Config.plist`
+3. 运行 `xcodegen generate`
+4. 用 Xcode 打开生成的 `扶摇.xcodeproj`
+5. 在本机配置 `Config.plist`、环境变量或 Keychain 中的 API 密钥
+6. 选择模拟器或真机运行
+
+也可以直接运行 `./setup.sh` 完成前四步。`Config.plist` 已被 Git 忽略，请勿提交真实密钥。
 
 ### 方式 2：命令行检查共享层
 
@@ -74,6 +84,18 @@ swift build
 - `Docs/项目导航.md`
 
 当前文本分析默认使用 Moonshot `Kimi K2.6`（`AI_PROVIDER=kimi`），备选 `Qwen`。
+
+不要在源码、提交历史或可分发的 App 包中放入开发者自己的生产密钥。公开发布时，建议由受控后端代理需要保密的第三方 API 调用。
+
+## 内容与书源说明
+
+本项目仅应用于你有权处理的内容，例如原创作品、已获授权内容或公版作品。在线书源的使用者应自行遵守目标站点的服务条款、访问规则和著作权要求。
+
+## 安全与许可证
+
+- 安全问题请参阅 [`SECURITY.md`](SECURITY.md)
+- 第三方组件说明请参阅 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+- 本项目使用 Apache License 2.0，详见 [`LICENSE`](LICENSE)
 
 ## 最近同步过的项目现实
 

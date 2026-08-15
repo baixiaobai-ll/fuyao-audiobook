@@ -19,5 +19,5 @@ fi
 
 cd "$ROOT_DIR"
 exec python3 -m backend.main serve \
-  --host "${FUYAO_BACKEND_HOST:-0.0.0.0}" \
+  --host "${FUYAO_BACKEND_HOST:-127.0.0.1}" \
   --port "${FUYAO_BACKEND_PORT:-8787}"

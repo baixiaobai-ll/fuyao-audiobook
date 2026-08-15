@@ -48,6 +48,9 @@ fuyao_ecs_common_commands_*.md
 # Large binary
 xcodegen.zip
 
+# Proprietary SDKs must be installed locally and are not redistributed.
+Vendor/
+
 # Local backend runtime data
 backend/data/
 backend/.pycache/
